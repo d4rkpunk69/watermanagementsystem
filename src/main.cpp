@@ -1,9 +1,9 @@
 #include <Arduino.h>
-#include <heltec_3.2.h>
+#include <heltec_unofficial.h>
 
 // Ultrasonic Sensor Pins
-#define TRIG_PIN 6
-#define ECHO_PIN 7
+#define TRIG_PIN 20 // <<-- useless pin
+#define ECHO_PIN 19 // <<-- this is the only pin that is needed
 
 // Tank Configuration
 #define BLIND_ZONE_CM 25.0   // Ignore readings beyond this distance
