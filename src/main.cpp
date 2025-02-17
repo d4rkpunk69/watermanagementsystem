@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include <heltec_unofficial.h>
+#include <heltec_3.2.h>
 
 // Ultrasonic Sensor Pins
 #define TRIG_PIN 6
@@ -28,6 +28,10 @@ float medianFilter(float values[], int size);
 UltrasonicSensor sensor; // Static allocation to avoid dynamic memory issues
 
 void setup() {
+    heltec_ve(true);
+    display.init();
+    display.setContrast(255);
+    display.flipScreenVertically();
     heltec_setup();
     Serial.begin(115200);
     pinMode(TRIG_PIN, OUTPUT);
@@ -98,7 +102,11 @@ void calculateWaterLevel(UltrasonicSensor* sensor) {
 
     float waterLevel = ((TANK_HEIGHT_CM - distance) / TANK_HEIGHT_CM) * 100;
     waterLevel = constrain(waterLevel, 0, 100);
-
+    display.clear();
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
+    display.drawString(64, 10, "Distance: " + String(distance, 1) + "cm");
+    display.drawString(64, 30, "Water Level: " + String(waterLevel, 1) + "%");
+    display.display();
     Serial.print("Distance: ");
     Serial.print(distance);
     Serial.print("cm | Water level: ");
