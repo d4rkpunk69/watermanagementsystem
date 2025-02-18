@@ -9,7 +9,7 @@
 #define BLIND_ZONE_CM 25.0   // Ignore readings beyond this distance
 #define TANK_HEIGHT_CM 100.0 // Adjust to your tank's total height
 #define SAMPLES 7            // Number of samples for filtering (increase for better accuracy)
-#define TIMEOUT_US 30000     // 30ms timeout for pulseIn
+#define TIMEOUT_US 26000     // 30ms timeout for pulseIn
 
 // Struct to Store Sensor Data
 struct UltrasonicSensor {
@@ -29,13 +29,10 @@ UltrasonicSensor sensor; // Static allocation to avoid dynamic memory issues
 
 void setup() {
     heltec_ve(true);
-    display.init();
-    display.setContrast(255);
-    display.flipScreenVertically();
     heltec_setup();
     Serial.begin(115200);
     pinMode(TRIG_PIN, OUTPUT);
-    pinMode(ECHO_PIN, INPUT_PULLUP);
+    pinMode(ECHO_PIN, INPUT);
     initSensor(&sensor, TRIG_PIN, ECHO_PIN);
 }
 
@@ -49,12 +46,14 @@ void initSensor(UltrasonicSensor* sensor, int trig, int echo) {
 // Measure Distance with Improved Timing
 float measureDistance(UltrasonicSensor* sensor) {
     digitalWrite(sensor->trigPin, LOW);
-    delayMicroseconds(2);  // Ensure stable trigger
+    heltec_delay(2);  // Ensure stable trigger
     digitalWrite(sensor->trigPin, HIGH);
-    delayMicroseconds(10);
+    heltec_delay(10);
     digitalWrite(sensor->trigPin, LOW);
 
     long duration = pulseIn(sensor->echoPin, HIGH, TIMEOUT_US); // Capture pulse duration
+    Serial.print("Raw pulseIn duration: ");
+    Serial.println(duration);
     float distance = (duration * 0.0343) / 2; // Convert to cm
 
     // Ensure valid reading
@@ -115,7 +114,6 @@ void calculateWaterLevel(UltrasonicSensor* sensor) {
 }
 
 void loop() {
-    heltec_loop();
+    // heltec_loop();
     calculateWaterLevel(&sensor);
-    delay(500);
 }
