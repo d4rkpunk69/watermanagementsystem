@@ -11,6 +11,8 @@
 #define SAMPLES 7            // Number of samples for filtering (increase for better accuracy)
 #define TIMEOUT_US 26000     // 30ms timeout for pulseIn
 
+float vbat = heltec_vbat();
+
 // Struct to Store Sensor Data
 struct UltrasonicSensor {
     int trigPin;
@@ -103,14 +105,12 @@ void calculateWaterLevel(UltrasonicSensor* sensor) {
     waterLevel = constrain(waterLevel, 0, 100);
     display.clear();
     display.setTextAlignment(TEXT_ALIGN_CENTER);
+    display.drawString(64, 0, "Battery: " + String(vbat) + "%");
     display.drawString(64, 10, "Distance: " + String(distance, 1) + "cm");
     display.drawString(64, 30, "Water Level: " + String(waterLevel, 1) + "%");
     display.display();
-    Serial.print("Distance: ");
-    Serial.print(distance);
-    Serial.print("cm | Water level: ");
-    Serial.print(waterLevel);
-    Serial.println("%");
+
+    
 }
 
 void loop() {
