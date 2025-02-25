@@ -4,7 +4,7 @@
 // Ultrasonic Sensor Pins
 #define TRIG_PIN 19
 #define ECHO_PIN 20
-#define NODE_ID 2
+#define NODE_ID 1
 
 // Tank Configuration
 #define BLIND_ZONE_CM 25.0   
@@ -13,6 +13,11 @@
 #define TIMEOUT_US 26000     
 #define TX_INTERVAL_MIN 5000  
 #define TX_INTERVAL_MAX 15000 
+
+//for 3.2 only
+const int VEXT_control = 36;
+const int ADC_control = 37;
+//end 3.2
 
 #pragma pack(push, 1)
 
@@ -115,8 +120,16 @@ float measureDistance();
 float getStableDistance();
 
 void setup() {
-    heltec_ve(true);
+    //v3.2 only
+    pinMode(VEXT_control, OUTPUT);
+//end 3.2
     heltec_setup();
+
+    //v3.2 only
+    digitalWrite(VEXT_control, LOW); // VEXT ON ffor OLED display
+    //end 3.2
+
+
     setupLora();
     // Initial loading screen
     showLoadingScreen(0, "Starting...");
