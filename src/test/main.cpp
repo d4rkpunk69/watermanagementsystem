@@ -1,109 +1,236 @@
-// #include <Arduino.h>
-// #include "common/lora_water_system.h"
-// #include <heltec_unofficial.h>
+/*
 
-// // Hardware Configuration
-// #define TRIG_PIN 19
-// #define ECHO_PIN 20
-// #define NODE_ID 1        // Unique for each sender (1-3)
-// #define TANK_HEIGHT_CM 100.0
-// #define SAMPLES 7        // Median filter samples
-// #define TX_INTERVAL_MIN 5000  // 5 seconds
-// #define TX_INTERVAL_MAX 15000 // 15 seconds
+#include <Arduino.h>
+#include <heltec_unofficial.h>
 
-// struct UltrasonicSensor {
-//     uint8_t trigPin;
-//     uint8_t echoPin;
-//     float lastValidDistance;
-// } sensor;
+// Ultrasonic Sensor Pins
+#define TRIG_PIN 19
+#define ECHO_PIN 20
+#define NODE_ID 1
 
-// void setup() {
-//     // Initialize hardware
-//     heltec_ve(true);
-//     heltec_setup();
-    
-//     // Sensor setup
-//     sensor = {TRIG_PIN, ECHO_PIN, 0.0};
-//     pinMode(TRIG_PIN, OUTPUT);
-//     pinMode(ECHO_PIN, INPUT);
-    
-//     // LoRa configuration
-//     radio.begin();
-//     radio.setFrequency(LORA_BAND);
-//     radio.setSpreadingFactor(9);
-//     radio.setSyncWord(LORA_SYNC_WORD);
-//     radio.setOutputPower(17);
-    
-//     // Initial display
-//     display.clear();
-//     display.drawString(64, 0, "Node " + String(NODE_ID));
-//     display.display();
-// }
+// Tank Configuration
+#define BLIND_ZONE_CM 25.0   
+#define TANK_HEIGHT_CM 100.0 
+#define SAMPLES 7            
+#define TIMEOUT_US 26000     
+#define TX_INTERVAL_MIN 5000  
+#define TX_INTERVAL_MAX 15000 
 
-// float measureDistance() {
-//     digitalWrite(sensor.trigPin, LOW);
-//     heltec_delay(2);
-//     digitalWrite(sensor.trigPin, HIGH);
-//     heltec_delay(10);
-//     digitalWrite(sensor.trigPin, LOW);
+//for 3.2 only
+const int VEXT_control = 36;
+const int ADC_control = 37;
+//end 3.2
 
-//     long duration = pulseIn(sensor.echoPin, HIGH, 26000);
-//     float distance = (duration * 0.0343) / 2;
-    
-//     // Validate and return
-//     if(distance <= 2.0 || distance > TANK_HEIGHT_CM) {
-//         return sensor.lastValidDistance;
-//     }
-//     sensor.lastValidDistance = distance;
-//     return distance;
-// }
+#pragma pack(push, 1)
 
-// float getFilteredDistance() {
-//     float readings[SAMPLES];
-    
-//     // Collect samples
-//     for(int i = 0; i < SAMPLES; i++) {
-//         readings[i] = measureDistance();
-//         heltec_delay(20);
-//     }
-    
-//     // Sort samples (bubble sort for small array)
-//     for(int i = 0; i < SAMPLES-1; i++) {
-//         for(int j = 0; j < SAMPLES-i-1; j++) {
-//             if(readings[j] > readings[j+1]) {
-//                 float temp = readings[j];
-//                 readings[j] = readings[j+1];
-//                 readings[j+1] = temp;
-//             }
-//         }
-//     }
+String getLORAStatus(int state);
+struct LoraPacket {
+    uint8_t nodeID;       
+    float distance_cm;    
+    float battery_v;      
+    uint8_t checksum;     
+};
+#pragma pack(pop)
 
-//     return readings[SAMPLES/2]; // Return median
-// }
+struct UltrasonicSensor {
+    int trigPin;
+    int echoPin;
+    float lastValidDistance;
+};
 
-// void transmitData() {
-//     LoraPacket packet;
-    
-//     // Populate packet
-//     packet.nodeID = NODE_ID;
-//     packet.distance_cm = getFilteredDistance();
-//     packet.battery_v = heltec_vbat();
-//     packet.checksum = calculateChecksum(packet);
-    
-//     // Transmit
-//     radio.transmit((byte*)&packet, sizeof(packet));
-    
-//     // Update display
-//     display.clear();
-//     display.drawString(0, 0, "Node " + String(NODE_ID));
-//     display.drawString(0, 16, "Distance: " + String(packet.distance_cm, 1) + "cm");
-//     display.drawString(0, 32, "Battery: " + String(packet.battery_v, 1) + "V");
-//     display.display();
-// }
+UltrasonicSensor sensor;
 
-// void loop() {
-//     transmitData();
+void initSensor() {
+    sensor.trigPin = TRIG_PIN;
+    sensor.echoPin = ECHO_PIN;
+    sensor.lastValidDistance = TANK_HEIGHT_CM;  // Start with full tank assumption
     
-//     // Random delay to prevent collisions
-//     delay(random(TX_INTERVAL_MIN, TX_INTERVAL_MAX));
-// }
+    pinMode(sensor.trigPin, OUTPUT);
+    pinMode(sensor.echoPin, INPUT);
+    digitalWrite(sensor.trigPin, LOW);
+}
+
+#define INIT_DELAY 500  // Time between progress updates
+
+// Loading screen graphics
+void showLoadingScreen(int progress, String status) {
+    display.clear();
+    
+    // Draw border
+    display.drawRect(0, 0, display.width(), display.height());
+    
+    // Draw progress bar
+    int barWidth = display.width() - 4;
+    display.drawProgressBar(2, 2, barWidth, 8, progress);
+    
+    // Show status text
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
+    display.drawString(display.width()/2, 15, "Initializing...");
+    display.drawString(display.width()/2, 30, status);
+    
+    display.display();
+}
+
+// LoRa Configuration
+void setupLora() {
+    radio.begin();
+    radio.setFrequency(915.0);
+    radio.setSpreadingFactor(9);
+    radio.setBandwidth(125.0);
+    radio.setCodingRate(5);
+    radio.setSyncWord(0xF3);
+    radio.setOutputPower(17);
+}
+
+uint8_t calculateChecksum(LoraPacket& packet) {
+    uint8_t* data = (uint8_t*)&packet;
+    uint8_t sum = 0;
+    for(size_t i = 0; i < sizeof(packet) - 1; i++) {
+        sum ^= data[i];
+    }
+    return sum;
+}
+
+void transmitData(float distance) {
+    LoraPacket packet;
+    packet.nodeID = NODE_ID;
+    packet.distance_cm = distance;
+    packet.battery_v = heltec_vbat();
+    packet.checksum = calculateChecksum(packet);
+
+    int state = radio.transmit((byte*)&packet, sizeof(packet));
+    
+    // Display transmission status
+    display.drawString(64, 40, "TX: " + getLORAStatus(state));
+}
+
+String getLORAStatus(int state) {
+    switch(state) {
+        case RADIOLIB_ERR_NONE:          return "OK";
+        case RADIOLIB_ERR_PACKET_TOO_LONG: return "TooLong";
+        case RADIOLIB_ERR_TX_TIMEOUT:    return "Timeout";
+        case RADIOLIB_ERR_CRC_MISMATCH:  return "CRC Error";
+        case RADIOLIB_ERR_INVALID_PREAMBLE_LENGTH: return "Bad Preamble";
+        case RADIOLIB_ERR_INVALID_BANDWIDTH: return "Bad BW";
+        case RADIOLIB_ERR_INVALID_SPREADING_FACTOR: return "Bad SF";
+        case RADIOLIB_ERR_INVALID_CODING_RATE: return "Bad CR";
+        default: return "Err:" + String(state);
+    }
+}
+
+float measureDistance();
+float getStableDistance();
+
+void setup() {
+    //v3.2 only
+    pinMode(VEXT_control, OUTPUT);
+//end 3.2
+    heltec_setup();
+
+    //v3.2 only
+    digitalWrite(VEXT_control, LOW); // VEXT ON ffor OLED display
+    //end 3.2
+
+
+    setupLora();
+    // Initial loading screen
+    showLoadingScreen(0, "Starting...");
+    delay(INIT_DELAY);
+
+    // Initialize serial
+    showLoadingScreen(10, "Serial COM");
+    Serial.begin(115200);
+    delay(INIT_DELAY);
+
+    // Initialize sensor
+    showLoadingScreen(30, "Ultrasonic");
+    initSensor();
+    showLoadingScreen(40, "Testing sensor...");
+    delay(INIT_DELAY);
+    showLoadingScreen(50, "Sensor Ready");
+    delay(INIT_DELAY);
+
+    showLoadingScreen(60, "Battery: " + String(heltec_vbat(), 1) + "V");
+    delay(INIT_DELAY);
+
+    // Initialize LoRa
+    showLoadingScreen(70, "LoRa Radio");
+    int loraState = radio.begin();
+    if(loraState != RADIOLIB_ERR_NONE) {
+        showLoadingScreen(100, "LoRa FAIL: " + String(loraState));
+        showLoadingScreen(100, "Please restart");
+        while(1); // Halt on critical error
+    }
+    
+    // Configure LoRa
+    radio.setFrequency(915.0);
+    radio.setSpreadingFactor(9);
+    radio.setSyncWord(0xF3);
+    showLoadingScreen(90, "LoRa Ready");
+    delay(INIT_DELAY);
+
+    // Complete initialization
+    showLoadingScreen(100, "System Ready");
+    delay(500);
+    
+    // Clear for main screen
+    display.clear();
+    display.display();
+}
+
+
+float measureDistance() {
+    digitalWrite(sensor.trigPin, LOW);
+    heltec_delay(2);
+    digitalWrite(sensor.trigPin, HIGH);
+    heltec_delay(10);
+    digitalWrite(sensor.trigPin, LOW);
+
+    long duration = pulseIn(sensor.echoPin, HIGH, TIMEOUT_US);
+    float distance = (duration * 0.0343) / 2;
+    
+    if (distance <= 2.0 || distance > TANK_HEIGHT_CM) {
+        return sensor.lastValidDistance;
+    }
+    sensor.lastValidDistance = distance;
+    return distance;
+}
+
+float getStableDistance() {
+    float readings[SAMPLES];
+    for (int i = 0; i < SAMPLES; i++) {
+        readings[i] = measureDistance();
+        heltec_delay(20);
+    }
+    
+    // Sort and return median
+    for (int i = 0; i < SAMPLES-1; i++) {
+        for (int j = 0; j < SAMPLES-i-1; j++) {
+            if (readings[j] > readings[j+1]) {
+                float temp = readings[j];
+                readings[j] = readings[j+1];
+                readings[j+1] = temp;
+            }
+        }
+    }
+    return readings[SAMPLES/2];
+}
+
+
+void loop() {
+    float distance = getStableDistance();
+    float waterLevel = ((TANK_HEIGHT_CM - distance)/TANK_HEIGHT_CM) * 100;
+    
+    display.clear();
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
+    display.drawString(64, 0, "Battery: " + String(heltec_vbat(), 1) + "V");
+    display.drawString(64, 15, "Distance: " + String(distance, 1) + "cm");
+    display.drawString(64, 30, "Level: " + String(waterLevel, 1) + "%");
+    
+    transmitData(distance);
+    display.display();
+    
+    // heltec_delay(random(TX_INTERVAL_MIN, TX_INTERVAL_MAX));
+    // heltec_delay(100);
+}
+*/
