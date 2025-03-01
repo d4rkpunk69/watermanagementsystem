@@ -7,7 +7,7 @@
 // Ultrasonic Sensor Pins
 #define TRIG_PIN 19
 #define ECHO_PIN 20
-#define NODE_ID 1
+#define NODE_ID 2
 
 // Transmission Configuration
 #define TX_ENABLED true      // Set to false to disable transmission
@@ -79,8 +79,8 @@ void showLoadingScreen(int progress, String status);
 
 void setup() {
     // For v3.2 only
-    pinMode(VEXT_control, OUTPUT);
-    digitalWrite(VEXT_control, LOW); // VEXT ON for OLED display
+    // pinMode(VEXT_control, OUTPUT);
+    // digitalWrite(VEXT_control, LOW); // VEXT ON for OLED display
     
     heltec_setup();
     
@@ -263,7 +263,7 @@ void displayTask(void *parameter) {
         display.setTextAlignment(TEXT_ALIGN_CENTER);
         
         // Header with node ID
-        display.drawString(64, 0, "Node " + String(NODE_ID));
+        display.drawString(64, 0, "Node " + String(NODE_ID) + " Deepwell");
         display.drawHorizontalLine(0, 10, 128);
         
         // Main data
