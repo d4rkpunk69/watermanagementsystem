@@ -7,11 +7,19 @@
 // Ultrasonic Sensor Pins
 #define TRIG_PIN 19
 #define ECHO_PIN 20
-#define NODE_ID 2
+#define NODE_ID 4
 
 // Transmission Configuration
 #define TX_ENABLED true      // Set to false to disable transmission
 #define TX_INTERVAL 5000     // Fixed transmission interval in milliseconds
+
+// Lora Configs
+#define LORA_FREQUENCY 433.0
+#define LORA_SPREADING_FACTOR 9
+#define LORA_BANDWIDTH 125.0
+#define LORA_CODING_RATE 5
+#define LORA_SYNC_WORD 0xF3
+#define LORA_OUTPUT_POWER 17
 
 // Tank Configuration
 #define BLIND_ZONE_CM 25.0   
@@ -79,8 +87,8 @@ void showLoadingScreen(int progress, String status);
 
 void setup() {
     // For v3.2 only
-    // pinMode(VEXT_control, OUTPUT);
-    // digitalWrite(VEXT_control, LOW); // VEXT ON for OLED display
+    pinMode(VEXT_control, OUTPUT);
+    digitalWrite(VEXT_control, LOW); // VEXT ON for OLED display
     
     heltec_setup();
     
@@ -109,12 +117,12 @@ void setup() {
     }
     
     // Configure LoRa
-    radio.setFrequency(915.0);
-    radio.setSpreadingFactor(9);
-    radio.setBandwidth(125.0);
-    radio.setCodingRate(5);
-    radio.setSyncWord(0xF3);
-    radio.setOutputPower(17);
+    radio.setFrequency(LORA_FREQUENCY);
+    radio.setSpreadingFactor(LORA_SPREADING_FACTOR);
+    radio.setBandwidth(LORA_BANDWIDTH);
+    radio.setCodingRate(LORA_CODING_RATE);
+    radio.setSyncWord(LORA_SYNC_WORD);
+    radio.setOutputPower(LORA_OUTPUT_POWER);
     
     showLoadingScreen(90, "LoRa Ready");
     delay(500);
@@ -263,7 +271,7 @@ void displayTask(void *parameter) {
         display.setTextAlignment(TEXT_ALIGN_CENTER);
         
         // Header with node ID
-        display.drawString(64, 0, "Node " + String(NODE_ID) + " Deepwell");
+        display.drawString(64, 0, "Node " + String(NODE_ID) + " Rain");
         display.drawHorizontalLine(0, 10, 128);
         
         // Main data
