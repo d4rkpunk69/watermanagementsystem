@@ -4,7 +4,7 @@
 #pragma once
 // Network Configuration
 #define LORA_SYNC_WORD 0xF3
-#define LORA_BAND 915.0
+#define LORA_BAND 433.0
 #define NODE_TIMEOUT 300000 // 5 minutes
 
 // Packet Structure

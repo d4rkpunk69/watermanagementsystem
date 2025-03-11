@@ -7,11 +7,13 @@
 // Ultrasonic Sensor Pins
 #define TRIG_PIN 19
 #define ECHO_PIN 20
-#define NODE_ID 4
+#define NODE_ID 2
 
 // Transmission Configuration
 #define TX_ENABLED true      // Set to false to disable transmission
 #define TX_INTERVAL 5000     // Fixed transmission interval in milliseconds
+uint8_t CALIBRATE = 0;
+#define GAP 5
 
 // Lora Configs
 #define LORA_FREQUENCY 433.0
@@ -25,7 +27,7 @@
 #define BLIND_ZONE_CM 25.0   
 #define TANK_HEIGHT_CM 100.0 
 #define SAMPLES 7            
-#define TIMEOUT_US 26000     
+#define TIMEOUT_US 50000     
 #define TX_INTERVAL_MIN 5000  
 #define TX_INTERVAL_MAX 15000 
 
@@ -49,7 +51,7 @@ struct LoraPacket {
 struct UltrasonicSensor {
     int trigPin;
     int echoPin;
-    float lastValidDistance;
+    float_t lastValidDistance;
 };
 
 // Shared data structure with synchronization
@@ -219,7 +221,7 @@ void loraTask(void *parameter) {
             xSemaphoreGive(dataMutex);
         }
         
-        Serial.println("TX Status: " + getLORAStatus(state));
+        // Serial.println("TX Status: " + getLORAStatus(state));
         
         // Wait for ACK with timeout
         if(radio.available()) {
@@ -271,7 +273,7 @@ void displayTask(void *parameter) {
         display.setTextAlignment(TEXT_ALIGN_CENTER);
         
         // Header with node ID
-        display.drawString(64, 0, "Node " + String(NODE_ID) + " Rain");
+        display.drawString(64, 0, "Node " + String(NODE_ID) + " Deepwell");
         display.drawHorizontalLine(0, 10, 128);
         
         // Main data
@@ -309,20 +311,41 @@ void initSensor() {
     digitalWrite(sensor.trigPin, LOW);
 }
 
+float gradualAdjustDistance(float currentDistance, float targetDistance) {
+    // Gradually adjust the current distance towards the target
+    if (fabs(currentDistance - targetDistance) > GAP) {
+        if (currentDistance < targetDistance) {
+            return currentDistance + GAP;
+        } else {
+            return currentDistance - GAP;
+        }
+    } else {
+        // If within the ramp step, snap to target distance
+        return targetDistance;
+    }
+}
+
 float measureDistance() {
     digitalWrite(sensor.trigPin, LOW);
-    delayMicroseconds(2);  // More precise than delay()
+    delayMicroseconds(2);
     digitalWrite(sensor.trigPin, HIGH);
-    delayMicroseconds(10);
+    delayMicroseconds(15);
     digitalWrite(sensor.trigPin, LOW);
 
     long duration = pulseIn(sensor.echoPin, HIGH, TIMEOUT_US);
-    float distance = (duration * 0.0343) / 2;
+    float_t distance = ((duration * 0.0343) / 2) + CALIBRATE;
+    Serial.printf("sensor: %f\n",sensor.lastValidDistance);
+    Serial.println(distance);
     
-    if (distance <= 2.0 || distance > TANK_HEIGHT_CM) {
+    if (distance <= CALIBRATE || distance > TANK_HEIGHT_CM) {
         return sensor.lastValidDistance;
     }
-    sensor.lastValidDistance = distance;
+    if (fabs(distance - sensor.lastValidDistance) > GAP) {
+    sensor.lastValidDistance = gradualAdjustDistance(sensor.lastValidDistance, distance);
+    } else {
+        // Normal update
+        sensor.lastValidDistance = distance;
+    }
     return distance;
 }
 
@@ -330,7 +353,7 @@ float getStableDistance() {
     float readings[SAMPLES];
     for (int i = 0; i < SAMPLES; i++) {
         readings[i] = measureDistance();
-        delay(20);  // Small delay between readings
+        delayMicroseconds(150);  // Small delay between readings
     }
     
     // Sort and return median
