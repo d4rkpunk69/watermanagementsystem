@@ -1,206 +1,192 @@
-/*
+#include "pinconfig.h"
+// Function prototypes
+void sensorTask(void *parameter);
+void loraTask(void *parameter);
+void initSensor();
+float measureDistance();
+float getStableDistance();
+int batteryToPercent(float voltage);
+uint8_t calculateChecksum(LoraPacket& packet);
 
-#include <Arduino.h>
-#include <heltec_unofficial.h>
+void setup() {
+    // For v3.2 only
+    pinMode(VEXT_control, OUTPUT);
+    digitalWrite(VEXT_control, LOW); // VEXT ON
+    
+    heltec_setup();
+    Serial.begin(115200);
+    
+    // Create mutex for data protection
+    dataMutex = xSemaphoreCreateMutex();
+    
+    // Initialize sensor
+    Serial.println("Initializing sensor...");
+    initSensor();
+    
+    // Initialize LoRa
+    Serial.println("Initializing LoRa...");
+    int loraState = radio.begin();
+    if(loraState != RADIOLIB_ERR_NONE) {
+        Serial.println("LoRa initialization failed: " + String(loraState));
+        while(1); // Halt on critical error
+    }
+    
+    // Configure LoRa
+    radio.setFrequency(LORA_FREQUENCY);
+    radio.setSpreadingFactor(LORA_SPREADING_FACTOR);
+    radio.setBandwidth(LORA_BANDWIDTH);
+    radio.setCodingRate(LORA_CODING_RATE);
+    radio.setSyncWord(LORA_SYNC_WORD);
+    radio.setOutputPower(LORA_OUTPUT_POWER);
+    
+    Serial.println("System ready");
+    
+    // Create tasks
+    xTaskCreatePinnedToCore(
+        sensorTask,
+        "SensorTask",
+        4096,
+        NULL,
+        1,
+        &sensorTaskHandle,
+        0  // Run on Core 0
+    );
+    
+    xTaskCreatePinnedToCore(
+        loraTask,
+        "LoRaTask",
+        4096,
+        NULL,
+        1,
+        &loraTaskHandle,
+        0  // Run on Core 0
+    );
+}
 
-// Ultrasonic Sensor Pins
-#define TRIG_PIN 19
-#define ECHO_PIN 20
-#define NODE_ID 1
+void loop() {
+    // Empty loop - tasks handle everything
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+}
 
-// Tank Configuration
-#define BLIND_ZONE_CM 25.0   
-#define TANK_HEIGHT_CM 100.0 
-#define SAMPLES 7            
-#define TIMEOUT_US 26000     
-#define TX_INTERVAL_MIN 5000  
-#define TX_INTERVAL_MAX 15000 
+// Sensor reading task
+void sensorTask(void *parameter) {
+    while(true) {
+        float distance = getStableDistance();
+        float waterLevel = ((TANK_HEIGHT_CM - distance) / TANK_HEIGHT_CM) * 100.0;
+        // Constrain water level to valid range (0-100%)
+        waterLevel = constrain(waterLevel, 0.0, 100.0);
+        
+        float batteryVoltage = heltec_vbat();
+        int batteryPercent = batteryToPercent(batteryVoltage);
+        
+        // Update shared data with mutex protection
+        if(xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+            sensorData.distance = distance;
+            sensorData.waterLevel = waterLevel;
+            sensorData.batteryPercent = batteryPercent;
+            xSemaphoreGive(dataMutex);
+        }
+        
+        // Read every 2 seconds
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
+    }
+}
 
-//for 3.2 only
-const int VEXT_control = 36;
-const int ADC_control = 37;
-//end 3.2
-
-#pragma pack(push, 1)
-
-String getLORAStatus(int state);
-struct LoraPacket {
-    uint8_t nodeID;       
-    float distance_cm;    
-    float battery_v;      
-    uint8_t checksum;     
-};
-#pragma pack(pop)
-
-struct UltrasonicSensor {
-    int trigPin;
-    int echoPin;
-    float lastValidDistance;
-};
-
-UltrasonicSensor sensor;
+// LoRa communication task
+void loraTask(void *parameter) {
+    while(true) {
+        float waterLevel = 0;
+        float batteryVoltage = 0;
+        
+        // Get latest data with mutex protection
+        if(xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+            waterLevel = sensorData.waterLevel;
+            batteryVoltage = sensorData.batteryPercent;
+            xSemaphoreGive(dataMutex);
+        }
+        
+        // Create and send packet with water level instead of distance
+        LoraPacket packet;
+        packet.nodeID = NODE_ID;
+        packet.waterLevel = waterLevel;  // Send water level directly
+        packet.battery_v = heltec_vbat();  // Get fresh battery reading
+        packet.checksum = 0;
+        packet.checksum = calculateChecksum(packet);
+        
+        int state = radio.transmit((byte*)&packet, sizeof(packet));
+        
+        // Update transmission time with mutex protection
+        if(xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+            sensorData.lastTxTime = millis();
+            xSemaphoreGive(dataMutex);
+        }
+        
+        if(state == RADIOLIB_ERR_NONE) {
+            Serial.println("Packet sent: WL=" + String(waterLevel) + "%, Batt=" + String(packet.battery_v) + "V");
+        } else {
+            Serial.println("TX Error: " + String(state));
+        }
+        
+        // Random delay to avoid collisions
+        vTaskDelay(random(TX_INTERVAL_MIN, TX_INTERVAL_MAX) / portTICK_PERIOD_MS);
+    }
+}
 
 void initSensor() {
     sensor.trigPin = TRIG_PIN;
     sensor.echoPin = ECHO_PIN;
-    sensor.lastValidDistance = TANK_HEIGHT_CM;  // Start with full tank assumption
+    sensor.lastValidDistance = TANK_HEIGHT_CM;  // Start with empty tank assumption
     
     pinMode(sensor.trigPin, OUTPUT);
     pinMode(sensor.echoPin, INPUT);
     digitalWrite(sensor.trigPin, LOW);
 }
 
-#define INIT_DELAY 500  // Time between progress updates
-
-// Loading screen graphics
-void showLoadingScreen(int progress, String status) {
-    display.clear();
-    
-    // Draw border
-    display.drawRect(0, 0, display.width(), display.height());
-    
-    // Draw progress bar
-    int barWidth = display.width() - 4;
-    display.drawProgressBar(2, 2, barWidth, 8, progress);
-    
-    // Show status text
-    display.setTextAlignment(TEXT_ALIGN_CENTER);
-    display.drawString(display.width()/2, 15, "Initializing...");
-    display.drawString(display.width()/2, 30, status);
-    
-    display.display();
-}
-
-// LoRa Configuration
-void setupLora() {
-    radio.begin();
-    radio.setFrequency(915.0);
-    radio.setSpreadingFactor(9);
-    radio.setBandwidth(125.0);
-    radio.setCodingRate(5);
-    radio.setSyncWord(0xF3);
-    radio.setOutputPower(17);
-}
-
-uint8_t calculateChecksum(LoraPacket& packet) {
-    uint8_t* data = (uint8_t*)&packet;
-    uint8_t sum = 0;
-    for(size_t i = 0; i < sizeof(packet) - 1; i++) {
-        sum ^= data[i];
-    }
-    return sum;
-}
-
-void transmitData(float distance) {
-    LoraPacket packet;
-    packet.nodeID = NODE_ID;
-    packet.distance_cm = distance;
-    packet.battery_v = heltec_vbat();
-    packet.checksum = calculateChecksum(packet);
-
-    int state = radio.transmit((byte*)&packet, sizeof(packet));
-    
-    // Display transmission status
-    display.drawString(64, 40, "TX: " + getLORAStatus(state));
-}
-
-String getLORAStatus(int state) {
-    switch(state) {
-        case RADIOLIB_ERR_NONE:          return "OK";
-        case RADIOLIB_ERR_PACKET_TOO_LONG: return "TooLong";
-        case RADIOLIB_ERR_TX_TIMEOUT:    return "Timeout";
-        case RADIOLIB_ERR_CRC_MISMATCH:  return "CRC Error";
-        case RADIOLIB_ERR_INVALID_PREAMBLE_LENGTH: return "Bad Preamble";
-        case RADIOLIB_ERR_INVALID_BANDWIDTH: return "Bad BW";
-        case RADIOLIB_ERR_INVALID_SPREADING_FACTOR: return "Bad SF";
-        case RADIOLIB_ERR_INVALID_CODING_RATE: return "Bad CR";
-        default: return "Err:" + String(state);
+float gradualAdjustDistance(float currentDistance, float targetDistance) {
+    // Gradually adjust the current distance towards the target
+    if (fabs(currentDistance - targetDistance) > BIG_GAP) {
+        if (currentDistance < targetDistance) {
+            return currentDistance + 1;
+        } else {
+            return currentDistance - 1;
+        }
+    } else {
+        // If within the ramp step, snap to target distance
+        return targetDistance;
     }
 }
-
-float measureDistance();
-float getStableDistance();
-
-void setup() {
-    //v3.2 only
-    pinMode(VEXT_control, OUTPUT);
-//end 3.2
-    heltec_setup();
-
-    //v3.2 only
-    digitalWrite(VEXT_control, LOW); // VEXT ON ffor OLED display
-    //end 3.2
-
-
-    setupLora();
-    // Initial loading screen
-    showLoadingScreen(0, "Starting...");
-    delay(INIT_DELAY);
-
-    // Initialize serial
-    showLoadingScreen(10, "Serial COM");
-    Serial.begin(115200);
-    delay(INIT_DELAY);
-
-    // Initialize sensor
-    showLoadingScreen(30, "Ultrasonic");
-    initSensor();
-    showLoadingScreen(40, "Testing sensor...");
-    delay(INIT_DELAY);
-    showLoadingScreen(50, "Sensor Ready");
-    delay(INIT_DELAY);
-
-    showLoadingScreen(60, "Battery: " + String(heltec_vbat(), 1) + "V");
-    delay(INIT_DELAY);
-
-    // Initialize LoRa
-    showLoadingScreen(70, "LoRa Radio");
-    int loraState = radio.begin();
-    if(loraState != RADIOLIB_ERR_NONE) {
-        showLoadingScreen(100, "LoRa FAIL: " + String(loraState));
-        showLoadingScreen(100, "Please restart");
-        while(1); // Halt on critical error
-    }
-    
-    // Configure LoRa
-    radio.setFrequency(915.0);
-    radio.setSpreadingFactor(9);
-    radio.setSyncWord(0xF3);
-    showLoadingScreen(90, "LoRa Ready");
-    delay(INIT_DELAY);
-
-    // Complete initialization
-    showLoadingScreen(100, "System Ready");
-    delay(500);
-    
-    // Clear for main screen
-    display.clear();
-    display.display();
-}
-
 
 float measureDistance() {
     digitalWrite(sensor.trigPin, LOW);
-    heltec_delay(2);
+    delayMicroseconds(2);
     digitalWrite(sensor.trigPin, HIGH);
-    heltec_delay(10);
+    delayMicroseconds(15);
     digitalWrite(sensor.trigPin, LOW);
 
     long duration = pulseIn(sensor.echoPin, HIGH, TIMEOUT_US);
     float distance = (duration * 0.0343) / 2;
     
-    if (distance <= 2.0 || distance > TANK_HEIGHT_CM) {
+    if (distance > TANK_HEIGHT_CM || distance == 0) {
         return sensor.lastValidDistance;
     }
-    sensor.lastValidDistance = distance;
-    return distance;
+    Serial.println(distance);
+    distance = distance + CALIBRATE - BLIND_ZONE_CM;
+    
+    if (fabs(distance - sensor.lastValidDistance) > BIG_GAP) {
+        sensor.lastValidDistance = gradualAdjustDistance(sensor.lastValidDistance, distance);
+    } else {
+        // Normal update
+        sensor.lastValidDistance = distance;
+    }
+    
+    return sensor.lastValidDistance;
 }
 
 float getStableDistance() {
     float readings[SAMPLES];
     for (int i = 0; i < SAMPLES; i++) {
         readings[i] = measureDistance();
-        heltec_delay(20);
+        delayMicroseconds(150);  // Small delay between readings
     }
     
     // Sort and return median
@@ -216,21 +202,17 @@ float getStableDistance() {
     return readings[SAMPLES/2];
 }
 
-
-void loop() {
-    float distance = getStableDistance();
-    float waterLevel = ((TANK_HEIGHT_CM - distance)/TANK_HEIGHT_CM) * 100;
-    
-    display.clear();
-    display.setTextAlignment(TEXT_ALIGN_CENTER);
-    display.drawString(64, 0, "Battery: " + String(heltec_vbat(), 1) + "V");
-    display.drawString(64, 15, "Distance: " + String(distance, 1) + "cm");
-    display.drawString(64, 30, "Level: " + String(waterLevel, 1) + "%");
-    
-    transmitData(distance);
-    display.display();
-    
-    // heltec_delay(random(TX_INTERVAL_MIN, TX_INTERVAL_MAX));
-    // heltec_delay(100);
+// Convert voltage to percentage
+int batteryToPercent(float voltage) {
+    int percent = ((voltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE)) * 100.0;
+    return constrain(percent, 0, 100);  // Ensure range 0-100
 }
-*/
+
+uint8_t calculateChecksum(LoraPacket& packet) {
+    uint8_t* data = (uint8_t*)&packet;
+    uint8_t sum = 0;
+    for(size_t i = 0; i < sizeof(packet) - 1; i++) {
+        sum ^= data[i];
+    }
+    return sum;
+}

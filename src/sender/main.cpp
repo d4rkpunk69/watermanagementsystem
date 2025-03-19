@@ -1,3 +1,4 @@
+/* 
 #include <Arduino.h>
 #include <heltec_unofficial.h>
 #include <freertos/FreeRTOS.h>
@@ -5,15 +6,16 @@
 #include <freertos/semphr.h>
 
 // Ultrasonic Sensor Pins
-#define TRIG_PIN 19
-#define ECHO_PIN 20
-#define NODE_ID 2
+#define TRIG_PIN 4 //19 7
+#define ECHO_PIN 5 //20 6
+#define NODE_ID 4
 
 // Transmission Configuration
 #define TX_ENABLED true      // Set to false to disable transmission
 #define TX_INTERVAL 5000     // Fixed transmission interval in milliseconds
-uint8_t CALIBRATE = 0;
-#define GAP 5
+uint8_t CALIBRATE = 5;
+#define BIG_GAP 5
+#define SMALL_GAP 1
 
 // Lora Configs
 #define LORA_FREQUENCY 433.0
@@ -24,10 +26,10 @@ uint8_t CALIBRATE = 0;
 #define LORA_OUTPUT_POWER 17
 
 // Tank Configuration
-#define BLIND_ZONE_CM 25.0   
+uint8_t BLIND_ZONE_CM = 25.0;
 #define TANK_HEIGHT_CM 100.0 
 #define SAMPLES 7            
-#define TIMEOUT_US 50000     
+#define TIMEOUT_US 30000     
 #define TX_INTERVAL_MIN 5000  
 #define TX_INTERVAL_MAX 15000 
 
@@ -40,12 +42,17 @@ const float MIN_VOLTAGE = 3.2;
 const float MAX_VOLTAGE = 4.2;
 
 #pragma pack(push, 1)
-struct LoraPacket {
+// uint8_t nodeID;       
+// float distance_cm;    
+// float battery_v;      
+// uint8_t checksum;    
+struct __attribute__((packed)) LoraPacket {
     uint8_t nodeID;       
     float distance_cm;    
     float battery_v;      
     uint8_t checksum;     
 };
+//4 0 0 C8 42 24 90 80 40 FA CE 3F 64 53 C9 3F 0 0 F4 34 4 0 0 0 9 0 0 0 7 0 0 0 12 0 0 0 0 0 0 0 B0 BE CE 3F 0 0 0 0 0 0 0 0 A 0 0 0 8 0 0 0 CD CC CC 3F 
 #pragma pack(pop)
 
 struct UltrasonicSensor {
@@ -73,6 +80,7 @@ SemaphoreHandle_t dataMutex = NULL;
 TaskHandle_t sensorTaskHandle = NULL;
 TaskHandle_t loraTaskHandle = NULL;
 TaskHandle_t displayTaskHandle = NULL;
+float distance = 0;
 
 // Function prototypes
 void sensorTask(void *parameter);
@@ -89,6 +97,7 @@ void showLoadingScreen(int progress, String status);
 
 void setup() {
     // For v3.2 only
+    // Serial.begin(9600);
     pinMode(VEXT_control, OUTPUT);
     digitalWrite(VEXT_control, LOW); // VEXT ON for OLED display
     
@@ -194,7 +203,6 @@ void sensorTask(void *parameter) {
 // LoRa communication task
 void loraTask(void *parameter) {
 
-    
     while(true) {
         float distance = 0;
         float batteryPercent = 0;
@@ -211,6 +219,7 @@ void loraTask(void *parameter) {
         packet.nodeID = NODE_ID;
         packet.distance_cm = distance;
         packet.battery_v = heltec_vbat();  // Get fresh battery reading
+        packet.checksum = 0;
         packet.checksum = calculateChecksum(packet);
         
         int state = radio.transmit((byte*)&packet, sizeof(packet));
@@ -223,23 +232,26 @@ void loraTask(void *parameter) {
         
         // Serial.println("TX Status: " + getLORAStatus(state));
         
-        // Wait for ACK with timeout
-        if(radio.available()) {
-            byte ackData[sizeof(LoraPacket)];
-            size_t len = sizeof(ackData);
-            int state = radio.receive(ackData, len);
+        // Wait for ACK with timeout 
+        //no need acknowledging just send directly
+        //------------UNCOMMENT IF NEEDED-----------------
+        // if(radio.available()) {
+        //     byte ackData[sizeof(LoraPacket)];
+        //     size_t len = sizeof(ackData);
+        //     int state = radio.receive(ackData, len);
             
-            if(state == RADIOLIB_ERR_NONE && len == sizeof(LoraPacket)) {
-                LoraPacket* ack = (LoraPacket*)ackData;
+        //     if(state == RADIOLIB_ERR_NONE && len == sizeof(LoraPacket)) {
+        //         LoraPacket* ack = (LoraPacket*)ackData;
                 
-                // Update ACK time with mutex protection
-                if(xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-                    sensorData.lastAckTime = millis();
-                    sensorData.ackReceived = true;
-                    xSemaphoreGive(dataMutex);
-                }
-            }
-        }
+        //         // Update ACK time with mutex protection
+        //         if(xSemaphoreTake(dataMutex, portMAX_DELAY)) {
+        //             sensorData.lastAckTime = millis();
+        //             sensorData.ackReceived = true;
+        //             xSemaphoreGive(dataMutex);
+        //         }
+        //     }
+        // }
+        
         
         // Random delay to avoid collisions
         vTaskDelay(random(TX_INTERVAL_MIN, TX_INTERVAL_MAX) / portTICK_PERIOD_MS);
@@ -263,8 +275,8 @@ void displayTask(void *parameter) {
             waterLevel = sensorData.waterLevel;
             batteryPercent = sensorData.batteryPercent;
             lastTxTime = sensorData.lastTxTime;
-            lastAckTime = sensorData.lastAckTime;
-            ackReceived = sensorData.ackReceived;
+            // lastAckTime = sensorData.lastAckTime; //again no acknowledgin
+            // ackReceived = sensorData.ackReceived;  
             xSemaphoreGive(dataMutex);
         }
         
@@ -313,11 +325,11 @@ void initSensor() {
 
 float gradualAdjustDistance(float currentDistance, float targetDistance) {
     // Gradually adjust the current distance towards the target
-    if (fabs(currentDistance - targetDistance) > GAP) {
+    if (fabs(currentDistance - targetDistance) > BIG_GAP) {
         if (currentDistance < targetDistance) {
-            return currentDistance + GAP;
+            return currentDistance + 1;
         } else {
-            return currentDistance - GAP;
+            return currentDistance - 1;
         }
     } else {
         // If within the ramp step, snap to target distance
@@ -333,14 +345,12 @@ float measureDistance() {
     digitalWrite(sensor.trigPin, LOW);
 
     long duration = pulseIn(sensor.echoPin, HIGH, TIMEOUT_US);
-    float_t distance = ((duration * 0.0343) / 2) + CALIBRATE;
-    Serial.printf("sensor: %f\n",sensor.lastValidDistance);
-    Serial.println(distance);
-    
-    if (distance <= CALIBRATE || distance > TANK_HEIGHT_CM) {
+    distance = (duration * 0.0343) / 2;
+    if (distance > TANK_HEIGHT_CM || distance == 0) {
         return sensor.lastValidDistance;
     }
-    if (fabs(distance - sensor.lastValidDistance) > GAP) {
+    distance = distance + CALIBRATE - BLIND_ZONE_CM;
+    if (fabs(distance - sensor.lastValidDistance) > BIG_GAP) {
     sensor.lastValidDistance = gradualAdjustDistance(sensor.lastValidDistance, distance);
     } else {
         // Normal update
@@ -428,3 +438,4 @@ void showLoadingScreen(int progress, String status) {
     
     display.display();
 }
+*/
