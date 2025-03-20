@@ -138,6 +138,7 @@ enum SelectionMode {AUTO, MANUAL};
 
 // ============= Global Variables =============
 const char* TANK_NAMES[] = {"MAIN TANK", "DEEPWELL", "RAINWATER", "LIVESTOCK", "BT SETTINGS"};
+const char *tankname[] = {"MAIN TANK", "RAINWATER", "DEEPWELL"};
 TankData tanks[NUM_TANKS] = {0};
 TankTab currentTab = MAIN;
 unsigned long lastTabChange = 0;

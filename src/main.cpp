@@ -494,7 +494,7 @@ void sendTankDataBluetooth() {
               if (hasValidTanks) jsonData += ","; // Add comma only between valid tanks
               
               jsonData += "{";
-              jsonData += "\"name\":\"" + String(TANK_NAMES[i]) + "\",";
+              jsonData += "\"name\":\"" + String(tankname[i]) + "\",";
               jsonData += "\"level\":" + String(tanks[i].waterLevel, 1);
               
               // Include battery level only for livestock tank (Node 4)
