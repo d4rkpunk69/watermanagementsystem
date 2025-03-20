@@ -61,8 +61,39 @@ struct CombinedLoraPacket {
     float dw_level;
     float rain_level;
     float battery_v;
+    uint8_t system_mode;
+    uint8_t system_status;
+    uint8_t water_source;
+    uint8_t current_case;
     uint8_t checksum;
 };
+
+enum Case {
+    caseA,
+    caseB,
+    caseC,
+    caseD,
+    caseE,
+    caseF,
+    caseG,
+    caseH,
+    caseI,
+    caseJ,
+    DEF,
+};
+Case currentCase = DEF;
+
+enum SystemStatus { 
+    STATUS_DEFAULT, 
+    STATUS_LOW_WATER, 
+    STATUS_CONFIRMING_SOURCE, 
+    STATUS_FILLING, 
+    STATUS_MANUAL,
+    STATUS_SAFETY_SHUTDOWN,
+    STATUS_COOLDOWN,
+    STATUS_WAITING_CONDITION_D
+};
+SystemStatus systemStatus;
 
 // Livestock LoRa Packet Structure - For receiving data from node 4
 struct LoraPacket {
@@ -103,7 +134,7 @@ struct BluetoothStats {
 enum TankTab {MAIN, DEEPWELL, RAINWATER, LIVESTOCK, BT_SETTINGS};
 
 // Tank Selection Mode
-enum SelectionMode {MANUAL, AUTO};
+enum SelectionMode {AUTO, MANUAL};
 
 // ============= Global Variables =============
 const char* TANK_NAMES[] = {"MAIN TANK", "DEEPWELL", "RAINWATER", "LIVESTOCK", "BT SETTINGS"};
@@ -124,7 +155,9 @@ unsigned long lastBtActivity = 0;
 
 // Tank selection variables
 SelectionMode selectionMode = AUTO;  // Default to AUTO mode
-uint8_t selectedSource = 0;  // 0=none, 1=rainwater, 2=deepwell
+
+enum WaterSource { SOURCE_NONE, SOURCE_RAINWATER, SOURCE_DEEPWELL };
+WaterSource selectedSource = SOURCE_NONE;  // 0=none, 1=rainwater, 2=deepwell
 
 // Command acknowledgment variables
 bool commandAckReceived = true;  // Start with no pending commands

@@ -162,6 +162,27 @@ void loraTask(void *parameter) {
                       tanks[0].valid = true;
                       tanks[1].valid = true;
                       tanks[2].valid = true;
+                      // selectionMode = (SelectionMode)packet->system_mode;
+                      // systemStatus = (SystemStatus)packet->system_status;
+                      // selectedSource = (WaterSource)packet->water_source;
+                      // currentCase = (Case)packet->current_case;
+                      // Assign system-level variables
+                      selectionMode = static_cast<SelectionMode>(packet->system_mode);
+                      systemStatus = static_cast<SystemStatus>(packet->system_status);
+                      selectedSource = static_cast<WaterSource>(packet->water_source);
+                      currentCase = static_cast<Case>(packet->current_case);
+                      
+
+                    Serial.println("Received system update:");
+                    Serial.print("Main Level: "); Serial.println(tanks[0].waterLevel);
+                    Serial.print("DW Level: "); Serial.println(tanks[1].waterLevel);
+                    Serial.print("Rain Level: "); Serial.println(tanks[2].waterLevel);
+                    Serial.print("Battery Voltage: "); Serial.println(packet->battery_v);
+                    Serial.print("System Mode: "); Serial.println((uint8_t)selectionMode);
+                    Serial.print("System Status: "); Serial.println((uint8_t)systemStatus);
+                    Serial.print("Water Source: "); Serial.println((uint8_t)selectedSource);
+                    Serial.print("Current Case: "); Serial.println((uint8_t)currentCase);
+                      
                       xSemaphoreGive(tankDataMutex);
                   }
                   // Acknowledge successful reception
@@ -262,21 +283,21 @@ void buttonTask(void *parameter) {
                     if(currentTab == MAIN) {
                         // For main tank, switch to AUTO mode
                         selectionMode = AUTO;
-                        selectedSource = 0;
+                        selectedSource = SOURCE_NONE;
                         sendControlCommandWithAck(0); // 0 = AUTO mode
                         Serial.println("Switching to AUTO mode");
                     }
                     else if(currentTab == DEEPWELL) {
                         // Select deepwell in manual mode
                         selectionMode = MANUAL;
-                        selectedSource = 2; // 2 = deepwell
+                        selectedSource = SOURCE_DEEPWELL; // 2 = deepwell
                         sendControlCommandWithAck(12); // 12 = MANUAL + deepwell
                         Serial.println("Switching to MANUAL mode with DEEPWELL source");
                     }
                     else if(currentTab == RAINWATER) {
                         // Select rainwater in manual mode
                         selectionMode = MANUAL;
-                        selectedSource = 1; // 1 = rainwater
+                        selectedSource = SOURCE_RAINWATER; // 1 = rainwater
                         sendControlCommandWithAck(11); // 11 = MANUAL + rainwater
                         Serial.println("Switching to MANUAL mode with RAINWATER source");
                     }
@@ -293,7 +314,7 @@ void buttonTask(void *parameter) {
                 if(selectionMode == AUTO) {
                     selectionMode = MANUAL;
                     // Keep previous source selection or default to rainwater
-                    if(selectedSource == 0) selectedSource = 1;
+                    if(selectedSource == SOURCE_NONE) selectedSource = SOURCE_RAINWATER;
                     sendControlCommandWithAck(10 + selectedSource); // 11 or 12
                 } else {
                     selectionMode = AUTO;
@@ -309,7 +330,7 @@ void buttonTask(void *parameter) {
                 
                 if(selectionMode == MANUAL) {
                     // Cycle between rainwater (1) and deepwell (2)
-                    selectedSource = (selectedSource == 1) ? 2 : 1;
+                    selectedSource = (selectedSource == SOURCE_RAINWATER) ? SOURCE_DEEPWELL : SOURCE_RAINWATER;
                     
                     // Send the appropriate command
                     sendControlCommandWithAck(10 + selectedSource); // 11 or 12
@@ -405,7 +426,7 @@ void toggleBluetooth() {
         showMessage("Bluetooth OFF", 1000);
     }
 }
-
+/*
 void sendTankDataBluetooth() {
     if(!btConnected) return;
     
@@ -457,87 +478,134 @@ void sendTankDataBluetooth() {
         xSemaphoreGive(tankDataMutex);
     }
 }
+*/
+//modified
+void sendTankDataBluetooth() {
+  if (!btConnected) return;
+
+  if (xSemaphoreTake(tankDataMutex, pdMS_TO_TICKS(100))) {
+      String jsonData = "{";
+      bool hasValidTanks = false;
+      
+      // Tank Data
+      jsonData += "\"tanks\":[";
+      for (int i = 0; i < NUM_TANKS; i++) {
+          if (tanks[i].valid && (millis() - tanks[i].lastUpdate < DATA_TIMEOUT)) {
+              if (hasValidTanks) jsonData += ","; // Add comma only between valid tanks
+              
+              jsonData += "{";
+              jsonData += "\"name\":\"" + String(TANK_NAMES[i]) + "\",";
+              jsonData += "\"level\":" + String(tanks[i].waterLevel, 1);
+              
+              // Include battery level only for livestock tank (Node 4)
+              if (i == 3) {
+                  jsonData += ",\"battery\":" + String(tanks[i].batteryPercent);
+              }
+              
+              jsonData += ",\"lastUpdate\":" + String(millis() - tanks[i].lastUpdate);
+              jsonData += "}";
+              
+              hasValidTanks = true;
+          }
+      }
+      jsonData += "],";
+      
+      // System Status (Only Include if Changed)
+      jsonData += "\"selectedSource\":\"" + String(selectedSource == 1 ? "rainwater" : 
+                                      (selectedSource == 2 ? "deepwell" : "none")) + "\",";
+      jsonData += "\"selectionMode\":\"" + String(selectionMode == AUTO ? "auto" : "manual") + "\",";
+      
+      // Command Status
+      if (!commandAckReceived) {
+          jsonData += "\"commandPending\":true,";
+      }
+
+      // Bluetooth Statistics
+      jsonData += "\"btStats\":{";
+      jsonData += "\"sent\":" + String(btStats.bytesSent) + ",";
+      jsonData += "\"received\":" + String(btStats.bytesReceived) + ",";
+      jsonData += "\"commands\":" + String(btStats.commandsReceived) + ",";
+      jsonData += "\"connections\":" + String(btStats.connectionCount);
+      jsonData += "}";
+
+      jsonData += "}";
+
+      // Send only if there's valid data
+      if (hasValidTanks || !commandAckReceived) {
+          BTSerial.println(jsonData);
+          updateBluetoothStats(true, jsonData.length() + 2);
+      }
+
+      xSemaphoreGive(tankDataMutex);
+  }
+}
 
 void handleBluetoothCommands() {
-    if(!btEnabled || !BTSerial.available()) return;
-    
-    while(BTSerial.available()) {
-        char c = BTSerial.read();
-        updateBluetoothStats(false, 1);
-        lastBtActivity = millis(); // Update activity timestamp
-        
-        // Handle line ending
-        if(c == '\n' || c == '\r') {
-            if(btBufferIndex > 0) {
-                btBuffer[btBufferIndex] = '\0';
-                processBluetoothCommand(String(btBuffer));
-                btBufferIndex = 0;
-            }
-        }
-        // Add character to buffer if there's space
-        else if(btBufferIndex < BT_BUFFER_SIZE - 1) {
-            btBuffer[btBufferIndex++] = c;
-        }
-    }
+  if (!btEnabled || !BTSerial.available()) return;
+
+  while (BTSerial.available()) {
+      char c = BTSerial.read();
+      updateBluetoothStats(false, 1); // Update received byte count
+      lastBtActivity = millis(); // Update timestamp
+
+      if (c == '\n' || c == '\r') { // End of command
+          if (btBufferIndex > 0) {
+              btBuffer[btBufferIndex] = '\0'; // Null-terminate string
+              processBluetoothCommand(String(btBuffer));
+              btBufferIndex = 0;
+          }
+      } else if (btBufferIndex < BT_BUFFER_SIZE - 1) {
+          btBuffer[btBufferIndex++] = c; // Store character in buffer
+      }
+  }
 }
 
 void processBluetoothCommand(const String& command) {
   btStats.commandsReceived++;
-  
-  if(command == "getData") {
-      // Send immediate data update
+
+  if (command == "getData") {
       sendTankDataBluetooth();
-  }
-  else if(command == "ping") {
-      String response = "pong";
-      BTSerial.println(response);
-      updateBluetoothStats(true, response.length() + 2);
-  }
-  else if(command.startsWith("setTab:")) {
-      // Extract tab number
+  } 
+  else if (command == "ping") {
+      sendBluetoothResponse("pong");
+  } 
+  else if (command == "getSystemStatus") {
+      String status = "{";
+      status += "\"systemMode\":\"" + String(selectionMode == AUTO ? "auto" : "manual") + "\",";
+      status += "\"systemStatus\":" + String((uint8_t)systemStatus) + ",";
+      status += "\"selectedSource\":\"" + getSourceName(selectedSource) + "\",";
+      status += "\"currentCase\":" + String((uint8_t)currentCase) + ",";
+      status += "\"batteryVoltage\":" + String(tanks[0].battery_v, 2);
+      status += "}";
+      sendBluetoothResponse(status);
+  } 
+  else if (command.startsWith("setTab:")) {
       int tabNum = command.substring(7).toInt();
-      if(tabNum >= 0 && tabNum < 5) { // 0-4 (including BT_SETTINGS)
+      if (tabNum >= 0 && tabNum < 5) {
           currentTab = (TankTab)tabNum;
-          String response = "Tab set to " + String(TANK_NAMES[currentTab]);
-          BTSerial.println(response);
-          updateBluetoothStats(true, response.length() + 2);
+          sendBluetoothResponse("Tab set to " + String(TANK_NAMES[currentTab]));
       } else {
-          String response = "Invalid tab number";
-          BTSerial.println(response);
-          updateBluetoothStats(true, response.length() + 2);
+          sendBluetoothResponse("Invalid tab number");
       }
-  }
-  else if(command == "setAuto") {
+  } 
+  else if (command == "setAuto") {
       selectionMode = AUTO;
-      selectedSource = 0;
-      sendControlCommandWithAck(0); // 0 = AUTO mode
-      
-      String response = "Selection mode set to AUTO";
-      BTSerial.println(response);
-      updateBluetoothStats(true, response.length() + 2);
-  }
-  else if(command.startsWith("setManual:")) {
-      // Extract source number: 1=rainwater, 2=deepwell
+      selectedSource = SOURCE_NONE;
+      sendControlCommandWithAck(0);
+      sendBluetoothResponse("Selection mode set to AUTO");
+  } 
+  else if (command.startsWith("setManual:")) {
       int sourceNum = command.substring(10).toInt();
-      
-      if(sourceNum == 1 || sourceNum == 2) {
+      if (sourceNum == 1 || sourceNum == 2) {
           selectionMode = MANUAL;
-          selectedSource = sourceNum;
-          
-          // Send the appropriate command with acknowledgment
-          sendControlCommandWithAck(10 + sourceNum); // 11 or 12
-          
-          String sourceName = (sourceNum == 1) ? "RAINWATER" : "DEEPWELL";
-          String response = "Selection mode set to MANUAL with " + sourceName + " source";
-          BTSerial.println(response);
-          updateBluetoothStats(true, response.length() + 2);
+          selectedSource = static_cast<WaterSource>(sourceNum);
+          sendControlCommandWithAck(10 + sourceNum);
+          sendBluetoothResponse("Selection mode set to MANUAL with " + getSourceName(sourceNum));
       } else {
-          String response = "Invalid source number. Use 1 for rainwater or 2 for deepwell.";
-          BTSerial.println(response);
-          updateBluetoothStats(true, response.length() + 2);
+          sendBluetoothResponse("Invalid source number. Use 1 for rainwater or 2 for deepwell.");
       }
-  }
-  else if(command == "getStats") {
+  } 
+  else if (command == "getStats") {
       String stats = "{";
       stats += "\"sent\":\"" + formatBytes(btStats.bytesSent) + "\",";
       stats += "\"received\":\"" + formatBytes(btStats.bytesReceived) + "\",";
@@ -545,65 +613,65 @@ void processBluetoothCommand(const String& command) {
       stats += "\"connections\":" + String(btStats.connectionCount) + ",";
       stats += "\"uptime\":\"" + formatTimeAgo(millis()) + "\"";
       stats += "}";
-      
-      BTSerial.println(stats);
-      updateBluetoothStats(true, stats.length() + 2);
-  }
-  else if(command == "getTankLevels") {
-      String levels = "{";
-      
-      for(int i = 0; i < NUM_TANKS; i++) {
-          float waterLevel = -1.0;
-          if(tanks[i].valid && (millis() - tanks[i].lastUpdate < DATA_TIMEOUT)) {
-              waterLevel = tanks[i].waterLevel;
-          }
-          
-          levels += "\"" + String(TANK_NAMES[i]) + "\":" + 
-                    (waterLevel >= 0 ? String(waterLevel, 1) : "null");
-          
-          if(i < NUM_TANKS - 1) {
-              levels += ",";
-          }
-      }
-      
-      levels += "}";
-      BTSerial.println(levels);
-      updateBluetoothStats(true, levels.length() + 2);
-  }
-  else if(command == "getMode") {
+      sendBluetoothResponse(stats);
+  } 
+  else if (command == "getTankLevels") {
+      sendBluetoothResponse(getTankLevelsJSON());
+  } 
+  else if (command == "getMode") {
       String modeInfo = "{";
       modeInfo += "\"mode\":\"" + String(selectionMode == AUTO ? "auto" : "manual") + "\",";
-      modeInfo += "\"source\":\"" + String(selectedSource == 1 ? "rainwater" : 
-                                       (selectedSource == 2 ? "deepwell" : "none")) + "\"";
+      modeInfo += "\"source\":\"" + getSourceName(selectedSource) + "\"";
       modeInfo += "}";
-      
-      BTSerial.println(modeInfo);
-      updateBluetoothStats(true, modeInfo.length() + 2);
-  }
-  else if(command == "help") {
-      String help = "Available commands:";
-      help += "\n  getData - Get current tank data";
-      help += "\n  ping - Connection test";
-      help += "\n  setTab:X - Switch to tab X (0-4)";
-      help += "\n  setAuto - Set auto selection mode";
-      help += "\n  setManual:X - Set manual mode with source X (1=rain, 2=deepwell)";
-      help += "\n  getTankLevels - Get only tank water levels";
-      help += "\n  getMode - Get current mode and source";
-      help += "\n  getStats - Get Bluetooth statistics";
-      help += "\n  help - Show this help";
-      
-      BTSerial.println(help);
-      updateBluetoothStats(true, help.length() + 2);
-  }
+      sendBluetoothResponse(modeInfo);
+  } 
+  else if (command == "help") {
+      sendBluetoothResponse(getHelpMessage());
+  } 
   else {
-      String response = "Unknown command. Type 'help' for available commands.";
-      BTSerial.println(response);
-      updateBluetoothStats(true, response.length() + 2);
+      sendBluetoothResponse("Unknown command. Type 'help' for available commands.");
   }
 }
 
+void sendBluetoothResponse(const String& message) {
+  BTSerial.println(message);
+  updateBluetoothStats(true, message.length() + 2);
+}
+
+String getSourceName(int source) {
+  return (source == 1) ? "rainwater" : (source == 2) ? "deepwell" : "none";
+}
+
+String getTankLevelsJSON() {
+  String levels = "{";
+  for (int i = 0; i < NUM_TANKS; i++) {
+      float waterLevel = -1.0;
+      if (tanks[i].valid && (millis() - tanks[i].lastUpdate < DATA_TIMEOUT)) {
+          waterLevel = tanks[i].waterLevel;
+      }
+      levels += "\"" + String(TANK_NAMES[i]) + "\":" + (waterLevel >= 0 ? String(waterLevel, 1) : "null");
+      if (i < NUM_TANKS - 1) levels += ",";
+  }
+  levels += "}";
+  return levels;
+}
+
+String getHelpMessage() {
+  return "Available commands:\n"
+         "  getData - Get current tank data\n"
+         "  ping - Connection test\n"
+         "  setTab:X - Switch to tab X (0-4)\n"
+         "  setAuto - Set auto selection mode\n"
+         "  setManual:X - Set manual mode with source X (1=rain, 2=deepwell)\n"
+         "  getTankLevels - Get only tank water levels\n"
+         "  getMode - Get current mode and source\n"
+         "  getStats - Get Bluetooth statistics\n"
+         "  help - Show this help\n"
+         "  getSystemStatus - Get system mode, status, source, case, and battery voltage";
+}
+
 void updateBluetoothStats(bool isSending, size_t bytes) {
-  if(isSending) {
+  if (isSending) {
       btStats.bytesSent += bytes;
   } else {
       btStats.bytesReceived += bytes;
@@ -799,7 +867,7 @@ void updateBTSettingsDisplay() {
   display.drawString(0, 45, "BT Status: " + String(btConnected ? "Connected" : "Disconnected"));
   
   // Command pending indicator
-  if (!commandAckReceived) {
+  if (!reset) {
       display.drawString(0, 55, "Cmd Pending: " + String(pendingCommand));
   }
 
