@@ -1,119 +1,4 @@
-#include <Arduino.h>
-#include <heltec_unofficial.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <freertos/semphr.h>
-
-// ============= Configuration =============
-// Ultrasonic sensor pins
-#define MAIN_TRIG_PIN 7
-#define MAIN_ECHO_PIN 6
-#define RAIN_TRIG_PIN 4
-#define RAIN_ECHO_PIN 5
-#define DEEP_TRIG_PIN 2
-#define DEEP_ECHO_PIN 3
-
-// Relay pins
-#define RAIN_SOLENOID_PIN 34
-#define DEEPWELL_SOLENOID_PIN 36
-#define PUMP_RELAY_PIN 35
-
-// System parameters
-#define TX_INTERVAL_MIN 2000
-#define TX_INTERVAL_MAX 5000
-#define DATA_TIMEOUT 300000
-#define VALVE_PUMP_DELAY 5000
-#define CONFIRMATION_DELAY 2000
-#define LORA_FREQUENCY 433.0
-#define LORA_SPREADING_FACTOR 9
-#define LORA_BANDWIDTH 125.0
-#define LORA_CODING_RATE 5
-#define LORA_SYNC_WORD 0xF3
-#define NODE_ID 1
-#define NUM_TANKS 3
-#define TANK_HEIGHT_CM 100.0
-
-// Water level thresholds
-#define NEARLY_EMPTY_THRESHOLD 20.0  // 20% water level is "Nearly Empty"
-#define FILLED_THRESHOLD 20.0        // Above 20% is considered "Filled"
-#define FULL_THRESHOLD_AUTO 95.0     // 95% water level is "Full" in AUTO mode (Case C)
-#define FULL_THRESHOLD_MANUAL 90.0   // 90% water level is "Full" in MANUAL mode (Case H)
-
-// Safety parameters
-#define BLIND_DISTANCE_CM 25.0
-#define SAMPLES 7
-#define TIMEOUT_SENSOR 30000
-#define PUMP_SAFETY_TIMEOUT 10000    // 10 seconds safety run after low water
-#define PUMP_COOLDOWN_PERIOD 60000   // 60 seconds cooldown after pump stops
-#define DEEPWELL_RESTART_DELAY 120000 // 2 minutes for condition D
-
-// ============= Structures & Enums =============
-#pragma pack(push, 1)
-struct CombinedLoraPacket {
-    uint8_t nodeID;
-    float main_level;
-    float dw_level;
-    float rain_level;
-    float battery_v;
-    uint8_t checksum;
-};
-
-struct ControlPacket {
-    uint8_t command;  // 0 = AUTO, 1x = MANUAL (where x is the source)
-    uint8_t checksum;
-};
-#pragma pack(pop)
-
-struct TankData {
-    float distance;
-    float waterLevel;
-    unsigned long lastUpdate;
-    bool valid;
-};
-
-enum SystemMode { MODE_AUTO, MODE_MANUAL };
-enum SystemStatus { 
-    STATUS_DEFAULT, 
-    STATUS_LOW_WATER, 
-    STATUS_CONFIRMING_SOURCE, 
-    STATUS_FILLING, 
-    STATUS_MANUAL,
-    STATUS_SAFETY_SHUTDOWN,
-    STATUS_COOLDOWN,
-    STATUS_WAITING_CONDITION_D
-};
-enum WaterSource { SOURCE_NONE, SOURCE_RAINWATER, SOURCE_DEEPWELL };
-
-struct UltrasonicSensor {
-    int trigPin;
-    int echoPin;
-    float lastValidDistance;
-};
-
-// ============= Global Variables =============
-TankData tanks[NUM_TANKS] = {0}; // Main, Deep, Rain
-SystemMode currentMode = MODE_AUTO;
-SystemStatus currentStatus = STATUS_DEFAULT;
-WaterSource selectedSource = SOURCE_NONE;
-WaterSource manualSource = SOURCE_NONE;
-int confirmationCount = 0;
-unsigned long lastConfirmationTime = 0;
-unsigned long pumpSafetyTimer = 0;
-unsigned long pumpCooldownTimer = 0;
-unsigned long deepwellRestartTimer = 0;
-bool pumpActive = false;
-bool pumpInSafetyMode = false;
-bool pumpInCooldown = false;
-bool deepwellWasLow = false;
-SemaphoreHandle_t tankDataMutex = NULL;
-UltrasonicSensor sensors[NUM_TANKS];
-
-// ============= Task Handles =============
-TaskHandle_t loraTaskHandle = NULL;
-TaskHandle_t displayTaskHandle = NULL;
-TaskHandle_t sensorTaskHandle = NULL;
-TaskHandle_t controlTaskHandle = NULL;
-
+#include "pinconfig.h"
 // ============= Function Prototypes =============
 void loraTask(void *parameter);
 void displayTask(void *parameter);
@@ -123,6 +8,7 @@ uint8_t calculateChecksum(void* packet, size_t size);
 void sendCombinedTankData();
 void sendAcknowledgement();
 float readUltrasonicDistance(int index);
+float gradualAdjustDistance(float currentLevel, float targetLevel);
 float calculateWaterLevel(float distance);
 void selectWaterSource();
 void confirmWaterSource();
@@ -203,6 +89,42 @@ void loop() {
 
 // ============= Sensor Tasks =============
 void sensorTask(void *parameter) {
+  const TickType_t xFrequency = pdMS_TO_TICKS(250);
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  
+  while(1) {
+      for (int i = 0; i < NUM_TANKS; i++) {
+          float measuredDistance = getStableDistance(i);
+          float correctedDistance = measuredDistance - SENSOR_OFFSET_CM; // Adjust for offset
+          
+          // Ensure correctedDistance is within valid range
+          if (correctedDistance < 0) correctedDistance = 0;  // Prevent negative values
+          if (correctedDistance > TANK_HEIGHTS_CM[i]) correctedDistance = TANK_HEIGHTS_CM[i];
+
+          float targetWaterLevel = ((TANK_HEIGHTS_CM[i] - correctedDistance) / TANK_HEIGHTS_CM[i]) * 100;
+          
+          // Apply gradual adjustment
+          float adjustedWaterLevel = gradualAdjustDistance(tanks[i].waterLevel, targetWaterLevel);
+          
+          if(xSemaphoreTake(tankDataMutex, pdMS_TO_TICKS(100))) {
+              tanks[i].distance = correctedDistance;
+              tanks[i].waterLevel = adjustedWaterLevel;
+              tanks[i].lastUpdate = millis();
+              tanks[i].valid = true;
+              xSemaphoreGive(tankDataMutex);
+          }
+          
+          // Small delay between readings to prevent interference
+          vTaskDelay(pdMS_TO_TICKS(50));
+      }
+      
+      uint32_t execTime = millis() - (xLastWakeTime * portTICK_PERIOD_MS);
+      TickType_t xAdjust = pdMS_TO_TICKS(execTime < 250 ? 250 - execTime : 0);
+      vTaskDelayUntil(&xLastWakeTime, xFrequency + xAdjust);
+  }
+}
+/*
+void sensorTask(void *parameter) {
     const TickType_t xFrequency = pdMS_TO_TICKS(250);
     TickType_t xLastWakeTime = xTaskGetTickCount();
     
@@ -224,11 +146,11 @@ void sensorTask(void *parameter) {
         }
         
         uint32_t execTime = millis() - (xLastWakeTime * portTICK_PERIOD_MS);
-        TickType_t xAdjust = pdMS_TO_TICKS(execTime < 250 ? 250 - execTime : 0);
-        vTaskDelayUntil(&xLastWakeTime, xFrequency + xAdjust);
-    }
-}
-
+//         TickType_t xAdjust = pdMS_TO_TICKS(execTime < 250 ? 250 - execTime : 0);
+//         vTaskDelayUntil(&xLastWakeTime, xFrequency + xAdjust);
+//     }
+// }
+*/
 // ============= LoRa Communication Task =============
 void loraTask(void *parameter) {
   const TickType_t xMinDelay = pdMS_TO_TICKS(TX_INTERVAL_MIN);
@@ -426,10 +348,33 @@ float readUltrasonicDistance(int index) {
     return distance;
 }
 
+float gradualAdjustDistance(float currentLevel, float targetLevel) {
+  const float BIG_GAP = 10.0;  // If the difference is big, slow down changes
+  const float SMALL_STEP = 0.5; // Fine adjustments step size
+  
+  if (fabs(currentLevel - targetLevel) > BIG_GAP) {
+      if (currentLevel < targetLevel) {
+          return currentLevel + 2.0;  // Faster increase for big gaps
+      } else {
+          return currentLevel - 2.0;  // Faster decrease for big gaps
+      }
+  } else {
+      // Fine-tune with smaller step size
+      if (currentLevel < targetLevel) {
+          return currentLevel + SMALL_STEP;
+      } else if (currentLevel > targetLevel) {
+          return currentLevel - SMALL_STEP;
+      }
+  }
+  return targetLevel;
+}
+
+
 // ============= Control Logic =============
 void handleAutoMode() {
     switch(currentStatus) {
         case STATUS_DEFAULT:
+            currentCase = DEF;
             if(tanks[0].valid && tanks[0].waterLevel <= NEARLY_EMPTY_THRESHOLD) {
                 currentStatus = STATUS_LOW_WATER;
                 Serial.println("Main tank is nearly empty, entering LOW_WATER status");
@@ -575,6 +520,7 @@ void handleManualMode(uint8_t command) {
         else {
             // Invalid source or no source specified
             Serial.println("Manual mode: No source activated");
+            currentCase = DEF;
             return;
         }
     }
@@ -727,6 +673,7 @@ bool checkCaseA() {
   
   if(result) {
       Serial.println("Case A met: Main tank nearly empty, deepwell filled");
+      currentCase = caseA;
   }
   
   return result;
@@ -745,6 +692,7 @@ bool checkCaseB() {
   
   if(result) {
       Serial.println("Case B met: Main tank nearly empty, deepwell nearly empty, rainwater filled");
+      currentCase = caseB;
   }
   
   return result;
@@ -761,6 +709,7 @@ bool checkCaseC() {
   
   if(result) {
       Serial.println("Case C met: Main tank is full (95-100%)");
+      currentCase = caseC;
   }
   
   return result;
@@ -777,6 +726,7 @@ bool checkCaseD() {
   
   if(result) {
       Serial.println("Case D met: Deepwell is nearly empty");
+      currentCase = caseD;
   }
   
   return result;
@@ -794,6 +744,7 @@ bool checkCaseE() {
   
   if(result) {
       Serial.println("Case E met: Both deepwell and rainwater are nearly empty");
+      currentCase = caseE;
   }
   
   return result;
@@ -811,6 +762,7 @@ bool checkCaseF() {
   
   if(result) {
       Serial.println("Case F met: Deepwell has more than 20% water level");
+      currentCase = caseF;
   }
   
   return result;
@@ -827,6 +779,7 @@ bool checkCaseG() {
   
   if(result) {
       Serial.println("Case G met: Rainwater has more than 20% water level");
+      currentCase = caseG;
   }
   
   return result;
@@ -843,6 +796,7 @@ bool checkCaseH() {
   
   if(result) {
       Serial.println("Case H met: Main tank is full (90%)");
+      currentCase = caseH;
   }
   
   return result;
@@ -859,6 +813,7 @@ bool checkCaseI() {
   
   if(result) {
       Serial.println("Case I met: Deepwell is nearly empty");
+      currentCase = caseI;
   }
   
   return result;
@@ -875,8 +830,8 @@ bool checkCaseJ() {
   
   if(result) {
       Serial.println("Case J met: Rainwater is nearly empty");
+      currentCase = caseJ;
   }
-  
   return result;
 }
 
@@ -903,6 +858,10 @@ void sendCombinedTankData() {
   packet.dw_level = tanks[1].waterLevel;
   packet.rain_level = tanks[2].waterLevel;
   packet.battery_v = heltec_vbat();
+  packet.system_mode = static_cast<uint8_t>(currentMode);
+  packet.system_status =static_cast<uint8_t>(currentStatus);
+  packet.water_source = static_cast<uint8_t>(selectedSource);
+  packet.current_case = static_cast<uint8_t>(currentCase);
   packet.checksum = 0;
   packet.checksum = calculateChecksum(&packet, sizeof(packet));
   
