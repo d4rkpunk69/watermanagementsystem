@@ -20,6 +20,10 @@ void sendTankDataBluetooth();
 void handleBluetoothCommands();
 void processBluetoothCommand(const String& command);
 void updateBluetoothStats(bool isSending, size_t bytes);
+void sendBluetoothResponse(const String& message);
+String getSourceName(int source);
+String getTankLevelsJSON();
+String getHelpMessage();
 
 // UI Functions
 void showMessage(const String& msg, int delayTime);
@@ -166,7 +170,7 @@ void loraTask(void *parameter) {
                       // systemStatus = (SystemStatus)packet->system_status;
                       // selectedSource = (WaterSource)packet->water_source;
                       // currentCase = (Case)packet->current_case;
-                      // Assign system-level variables
+                      // Assign system-level variables by casting try below
                       selectionMode = static_cast<SelectionMode>(packet->system_mode);
                       systemStatus = static_cast<SystemStatus>(packet->system_status);
                       selectedSource = static_cast<WaterSource>(packet->water_source);
@@ -203,8 +207,7 @@ void loraTask(void *parameter) {
                   if (calculateChecksum(packet, sizeof(LoraPacket) - 1) == receivedChecksum) {
                       if (xSemaphoreTake(tankDataMutex, portMAX_DELAY)) {
                           // Update livestock tank data
-                          tanks[3].distance = packet->distance_cm;
-                          tanks[3].waterLevel = ((TANK_HEIGHT_CM - packet->distance_cm) / TANK_HEIGHT_CM) * 100.0f;
+                          tanks[3].waterLevel = packet->waterLevel;
                           tanks[3].battery_v = packet->battery_v;
                           tanks[3].batteryPercent = batteryToPercent(packet->battery_v);
                           tanks[3].lastUpdate = millis();
@@ -223,6 +226,7 @@ void loraTask(void *parameter) {
           else if (dataBuffer[0] == 'A') { // Check for ACK
             Serial.println("Received ACK");
             reset = true;
+            commandAckReceived = true;
           }
       }
       vTaskDelayUntil(&xLastWakeTime, xFrequency);
@@ -516,9 +520,7 @@ void sendTankDataBluetooth() {
       jsonData += "\"selectionMode\":\"" + String(selectionMode == AUTO ? "auto" : "manual") + "\",";
       
       // Command Status
-      if (!commandAckReceived) {
-          jsonData += "\"commandPending\":true,";
-      }
+      jsonData += "\"commandPending\":" + String(reset ? "false" : "true") + ",";
 
       // Bluetooth Statistics
       jsonData += "\"btStats\":{";

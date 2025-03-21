@@ -68,6 +68,21 @@ struct CombinedLoraPacket {
     uint8_t checksum;
 };
 
+// Livestock LoRa Packet Structure - For receiving data from node 4
+struct __attribute__((packed)) LoraPacket {
+    uint8_t nodeID;
+    float waterLevel;    // Changed from distance_cm to waterLevel
+    float battery_v;
+    uint8_t checksum;
+};
+
+// Control Packet Structure - For sending commands to the combined node
+struct ControlPacket {
+    uint8_t command;  // 0 = AUTO, 1x = MANUAL (where x is the source)
+    uint8_t checksum;
+};
+#pragma pack(pop)
+
 enum Case {
     caseA,
     caseB,
@@ -94,21 +109,6 @@ enum SystemStatus {
     STATUS_WAITING_CONDITION_D
 };
 SystemStatus systemStatus;
-
-// Livestock LoRa Packet Structure - For receiving data from node 4
-struct LoraPacket {
-  uint8_t nodeID;  // Should be 4 for livestock
-  float distance_cm;
-  float battery_v;
-  uint8_t checksum;
-};
-
-// Control Packet Structure - For sending commands to the combined node
-struct ControlPacket {
-    uint8_t command;  // 0 = AUTO, 1x = MANUAL (where x is the source)
-    uint8_t checksum;
-};
-#pragma pack(pop)
 
 // Tank Data Structure
 struct TankData {
@@ -138,7 +138,7 @@ enum SelectionMode {AUTO, MANUAL};
 
 // ============= Global Variables =============
 const char* TANK_NAMES[] = {"MAIN TANK", "DEEPWELL", "RAINWATER", "LIVESTOCK", "BT SETTINGS"};
-const char *tankname[] = {"MAIN TANK", "RAINWATER", "DEEPWELL"};
+const char *tankname[] = {"MAIN TANK", "RAINWATER", "DEEPWELL", "LIVESTOCK"};
 TankData tanks[NUM_TANKS] = {0};
 TankTab currentTab = MAIN;
 unsigned long lastTabChange = 0;
