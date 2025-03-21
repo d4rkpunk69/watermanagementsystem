@@ -33,7 +33,10 @@
 #define NUM_TANKS 3
 #define TANK_HEIGHT_CM 100.0
 
-const float TANK_HEIGHTS_CM[NUM_TANKS] = {120.0, 150.0, 130.0}; // Example heights in cm for each tank
+const float maintankheight = 89;
+const float raintankheight = 90;
+const float dwtankheight = 150;
+const float TANK_HEIGHTS_CM[NUM_TANKS] = {maintankheight, raintankheight, dwtankheight}; // Example heights in cm for each tank
 const float SENSOR_OFFSET_CM = 25.0; // Sensor is mounted 25 cm above the max water level
 
 // Water level thresholds
@@ -78,7 +81,10 @@ struct TankData {
     bool valid;
 };
 
-enum SystemMode { MODE_AUTO, MODE_MANUAL };
+enum SystemMode { 
+    MODE_AUTO, 
+    MODE_MANUAL 
+};
 enum SystemStatus { 
     STATUS_DEFAULT, 
     STATUS_LOW_WATER, 
@@ -89,7 +95,11 @@ enum SystemStatus {
     STATUS_COOLDOWN,
     STATUS_WAITING_CONDITION_D
 };
-enum WaterSource { SOURCE_NONE, SOURCE_RAINWATER, SOURCE_DEEPWELL };
+enum WaterSource { 
+    SOURCE_NONE, 
+    SOURCE_RAINWATER, 
+    SOURCE_DEEPWELL 
+};
 
 // Case conditions
 enum Case {
