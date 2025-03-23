@@ -349,24 +349,17 @@ float readUltrasonicDistance(int index) {
 }
 
 float gradualAdjustDistance(float currentLevel, float targetLevel) {
-  const float BIG_GAP = 10.0;  // If the difference is big, slow down changes
-  const float SMALL_STEP = 0.5; // Fine adjustments step size
   
   if (fabs(currentLevel - targetLevel) > BIG_GAP) {
       if (currentLevel < targetLevel) {
-          return currentLevel + 2.0;  // Faster increase for big gaps
+          return currentLevel + 1.0;  // Faster increase for big gaps
       } else {
-          return currentLevel - 2.0;  // Faster decrease for big gaps
+          return currentLevel - 1.0;  // Faster decrease for big gaps
       }
   } else {
       // Fine-tune with smaller step size
-      if (currentLevel < targetLevel) {
-          return currentLevel + SMALL_STEP;
-      } else if (currentLevel > targetLevel) {
-          return currentLevel - SMALL_STEP;
-      }
+      return targetLevel;
   }
-  return targetLevel;
 }
 
 
@@ -483,6 +476,17 @@ void handleManualMode(uint8_t command) {
         
         // Deactivate current sources first
         deactivateWaterSource();
+        
+         // Check if the main tank is valid and not full before proceeding
+         if (!tanks[0].valid) {
+            Serial.println("Manual mode: Main tank data is invalid! Aborting command.");
+            return;
+        }
+        
+        if (tanks[0].waterLevel >= FULL_THRESHOLD_MANUAL) {
+            Serial.println("Manual mode: Main tank is already full! Pump will not start.");
+            return;
+        }
         
         // Activate the selected source
         if(sourceCode == 1) {

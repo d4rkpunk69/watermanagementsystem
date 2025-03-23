@@ -32,18 +32,19 @@
 #define NODE_ID 1
 #define NUM_TANKS 3
 #define TANK_HEIGHT_CM 100.0
+#define BIG_GAP 5.0  //gap between currentlevel and targetlevel
 
-const float maintankheight = 89;
-const float raintankheight = 90;
-const float dwtankheight = 150;
+const float maintankheight = 91.44;
+const float raintankheight = 88.0;
+const float dwtankheight = 202.0;
 const float TANK_HEIGHTS_CM[NUM_TANKS] = {maintankheight, raintankheight, dwtankheight}; // Example heights in cm for each tank
 const float SENSOR_OFFSET_CM = 25.0; // Sensor is mounted 25 cm above the max water level
 
 // Water level thresholds
 #define NEARLY_EMPTY_THRESHOLD 20.0  // 20% water level is "Nearly Empty"
 #define FILLED_THRESHOLD 20.0        // Above 20% is considered "Filled"
-#define FULL_THRESHOLD_AUTO 95.0     // 95% water level is "Full" in AUTO mode (Case C)
-#define FULL_THRESHOLD_MANUAL 90.0   // 90% water level is "Full" in MANUAL mode (Case H)
+#define FULL_THRESHOLD_AUTO 90.0     // 95% water level is "Full" in AUTO mode (Case C)
+#define FULL_THRESHOLD_MANUAL 90.0   // 95% water level is "Full" in MANUAL mode (Case H)
 
 // Safety parameters
 #define BLIND_DISTANCE_CM 25.0
@@ -132,10 +133,10 @@ SystemMode currentMode = MODE_AUTO;
 SystemStatus currentStatus = STATUS_DEFAULT;
 WaterSource selectedSource = SOURCE_NONE;
 WaterSource manualSource = SOURCE_NONE;
-int confirmationCount = 0;
+int confirmationCount = 3;
 unsigned long lastConfirmationTime = 0;
-unsigned long pumpSafetyTimer = 0;
-unsigned long pumpCooldownTimer = 0;
+unsigned long pumpSafetyTimer = 5000;
+unsigned long pumpCooldownTimer = 30000;
 unsigned long deepwellRestartTimer = 0;
 bool pumpActive = false;
 bool pumpInSafetyMode = false;
