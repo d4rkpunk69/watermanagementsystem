@@ -31,13 +31,20 @@
 #define LORA_SYNC_WORD 0xF3
 #define NODE_ID 1
 #define NUM_TANKS 3
-#define TANK_HEIGHT_CM 100.0
 #define BIG_GAP 5.0  //gap between currentlevel and targetlevel
 
-const float maintankheight = 91.44;
-const float raintankheight = 88.0;
-const float dwtankheight = 202.0;
-const float TANK_HEIGHTS_CM[NUM_TANKS] = {maintankheight, raintankheight, dwtankheight}; // Example heights in cm for each tank
+#define STABILIZATION_COUNT 5  // Number of consistent readings before valid
+#define STABILIZATION_TIME 5000  // Minimum time (5s) before accepting data
+
+bool tanksStable = false;  // System-wide stability flag
+unsigned long systemStartTime = 0;  // Track system start time
+int stableReadings[NUM_TANKS] = {0};  // Count of stable readings per tank
+
+
+const float maintankheight = 76.16f;
+const float raintankheight = 88.0f;
+const float dwtankheight = 202.0f;
+const float TANK_HEIGHTS_CM[NUM_TANKS] = {maintankheight, dwtankheight, raintankheight}; // Example heights in cm for each tank
 const float SENSOR_OFFSET_CM = 25.0; // Sensor is mounted 25 cm above the max water level
 
 // Water level thresholds

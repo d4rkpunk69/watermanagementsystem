@@ -9,14 +9,13 @@ void sendCombinedTankData();
 void sendAcknowledgement();
 float readUltrasonicDistance(int index);
 float gradualAdjustDistance(float currentLevel, float targetLevel);
-float calculateWaterLevel(float distance);
 void selectWaterSource();
 void confirmWaterSource();
 void activateWaterSource();
 void deactivateWaterSource();
 void updateDisplay();
 void initSensors();
-float getStableDistance(int index);
+float getStableDistance(int index, float tankheight);
 void showMessage(const String& msg, int delayTime);
 void showLoadingScreen(int progress, String status);
 void handleManualMode(uint8_t command);
@@ -45,6 +44,9 @@ void setup() {
     heltec_ve(true);
     heltec_setup();
     Serial.begin(115200);
+    tanks[0].waterLevel = 100;
+    tanks[1].waterLevel = 0;
+    tanks[2].waterLevel = 0;
 
     showLoadingScreen(0, "Starting...");
     heltec_delay(500);
@@ -75,7 +77,6 @@ void setup() {
     
     showLoadingScreen(100, "System Ready");
     heltec_delay(500);
-    
     // Task Creation with Optimized Priorities
     xTaskCreatePinnedToCore(loraTask, "LoRaTask", 4096, NULL, 1, &loraTaskHandle, 0);
     xTaskCreatePinnedToCore(displayTask, "DisplayTask", 4096, NULL, 2, &displayTaskHandle, 0);
@@ -89,40 +90,42 @@ void loop() {
 
 // ============= Sensor Tasks =============
 void sensorTask(void *parameter) {
-  const TickType_t xFrequency = pdMS_TO_TICKS(250);
-  TickType_t xLastWakeTime = xTaskGetTickCount();
+    const TickType_t xFrequency = pdMS_TO_TICKS(250);
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+    
+    while(1) {
+        for (int i = 0; i < NUM_TANKS; i++) {
+            float measuredDistance = getStableDistance(i, TANK_HEIGHTS_CM[i]);
+            // Ensure correctedDistance is within valid range
+            if (measuredDistance < 0) measuredDistance = 0;  // Prevent negative values
+            if (measuredDistance > TANK_HEIGHTS_CM[i]) measuredDistance = TANK_HEIGHTS_CM[i];
   
-  while(1) {
-      for (int i = 0; i < NUM_TANKS; i++) {
-          float measuredDistance = getStableDistance(i);
-          float correctedDistance = measuredDistance - SENSOR_OFFSET_CM; // Adjust for offset
-          
-          // Ensure correctedDistance is within valid range
-          if (correctedDistance < 0) correctedDistance = 0;  // Prevent negative values
-          if (correctedDistance > TANK_HEIGHTS_CM[i]) correctedDistance = TANK_HEIGHTS_CM[i];
-
-          float targetWaterLevel = ((TANK_HEIGHTS_CM[i] - correctedDistance) / TANK_HEIGHTS_CM[i]) * 100;
-          
-          // Apply gradual adjustment
-          float adjustedWaterLevel = gradualAdjustDistance(tanks[i].waterLevel, targetWaterLevel);
-          
-          if(xSemaphoreTake(tankDataMutex, pdMS_TO_TICKS(100))) {
-              tanks[i].distance = correctedDistance;
-              tanks[i].waterLevel = adjustedWaterLevel;
-              tanks[i].lastUpdate = millis();
-              tanks[i].valid = true;
-              xSemaphoreGive(tankDataMutex);
-          }
-          
-          // Small delay between readings to prevent interference
-          vTaskDelay(pdMS_TO_TICKS(50));
-      }
-      
-      uint32_t execTime = millis() - (xLastWakeTime * portTICK_PERIOD_MS);
-      TickType_t xAdjust = pdMS_TO_TICKS(execTime < 250 ? 250 - execTime : 0);
-      vTaskDelayUntil(&xLastWakeTime, xFrequency + xAdjust);
+            float targetWaterLevel = ((TANK_HEIGHTS_CM[i] - measuredDistance + SENSOR_OFFSET_CM) / TANK_HEIGHTS_CM[i]) * 100;
+            
+            // Apply gradual adjustment
+            float adjustedWaterLevel = gradualAdjustDistance(tanks[i].waterLevel, targetWaterLevel);
+            
+            if(xSemaphoreTake(tankDataMutex, pdMS_TO_TICKS(100))) {
+                tanks[i].distance = measuredDistance;
+                tanks[i].waterLevel = adjustedWaterLevel;
+                tanks[i].lastUpdate = millis();
+                tanks[i].valid = true;
+                xSemaphoreGive(tankDataMutex);
+            }
+            
+            // Small delay between readings to prevent interference
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        
+        
+        uint32_t execTime = millis() - (xLastWakeTime * portTICK_PERIOD_MS);
+        TickType_t xAdjust = pdMS_TO_TICKS(execTime < 250 ? 250 - execTime : 0);
+        vTaskDelayUntil(&xLastWakeTime, xFrequency + xAdjust);
+    }
   }
-}
+
+
+
 /*
 void sensorTask(void *parameter) {
     const TickType_t xFrequency = pdMS_TO_TICKS(250);
@@ -289,7 +292,7 @@ void initSensors() {
     delayMicroseconds(5000);
 }
 
-float getStableDistance(int index) {
+float getStableDistance(int index, float tankheight) {
     float readings[SAMPLES];
     int validReadings = 0;
     float validValues[SAMPLES];
@@ -299,7 +302,7 @@ float getStableDistance(int index) {
         readings[i] = readUltrasonicDistance(index);
         
         // Only include readings outside the blind zone
-        if(readings[i] >= BLIND_DISTANCE_CM && readings[i] <= TANK_HEIGHT_CM) {
+        if(readings[i] >= BLIND_DISTANCE_CM && readings[i] <= tankheight) {
             validValues[validReadings] = readings[i];
             validReadings++;
         }
@@ -352,16 +355,15 @@ float gradualAdjustDistance(float currentLevel, float targetLevel) {
   
   if (fabs(currentLevel - targetLevel) > BIG_GAP) {
       if (currentLevel < targetLevel) {
-          return currentLevel + 1.0;  // Faster increase for big gaps
+          return currentLevel + 1.0f;  // Faster increase for big gaps
       } else {
-          return currentLevel - 1.0;  // Faster decrease for big gaps
+          return currentLevel - 1.0f;  // Faster decrease for big gaps
       }
   } else {
       // Fine-tune with smaller step size
       return targetLevel;
   }
 }
-
 
 // ============= Control Logic =============
 void handleAutoMode() {
@@ -960,15 +962,4 @@ void showLoadingScreen(int progress, String status) {
   display.drawRect(10, 50, barWidth, 10);
   display.fillRect(10, 50, map(progress, 0, 100, 0, barWidth), 10);
   display.display();
-}
-
-float calculateWaterLevel(float distance) {
-  if(distance >= TANK_HEIGHT_CM) {
-      return 0.0f; // Empty tank
-  }
-  if(distance <= 0) {
-      return 100.0f; // Full tank (or error)
-  }
-  float waterLevel = ((TANK_HEIGHT_CM - distance) / TANK_HEIGHT_CM) * 100.0f;
-  return constrain(waterLevel, 0.0f, 100.0f);
 }
