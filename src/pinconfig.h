@@ -56,10 +56,11 @@ const float SENSOR_OFFSET_CM = 25.0; // Sensor is mounted 25 cm above the max wa
 // Safety parameters
 #define BLIND_DISTANCE_CM 25.0
 #define SAMPLES 7
-#define TIMEOUT_SENSOR 30000
 #define PUMP_SAFETY_TIMEOUT 10000    // 10 seconds safety run after low water
 #define PUMP_COOLDOWN_PERIOD 60000   // 60 seconds cooldown after pump stops
 #define DEEPWELL_RESTART_DELAY 120000 // 2 minutes for condition D
+
+int TIMEOUT_SENSOR = 30000;
 
 // ============= Structures & Enums =============
 #pragma pack(push, 1)

@@ -95,15 +95,16 @@ void sensorTask(void *parameter) {
     
     while(1) {
         for (int i = 0; i < NUM_TANKS; i++) {
-            float measuredDistance = getStableDistance(i, TANK_HEIGHTS_CM[i]);
+            uint8_t measuredDistance = getStableDistance(i, TANK_HEIGHTS_CM[i]);
+            Serial.printf("#%i: %i\n", i, measuredDistance);
             // Ensure correctedDistance is within valid range
             if (measuredDistance < 0) measuredDistance = 0;  // Prevent negative values
-            if (measuredDistance > TANK_HEIGHTS_CM[i]) measuredDistance = TANK_HEIGHTS_CM[i];
+            if (measuredDistance > TANK_HEIGHTS_CM[i] + SENSOR_OFFSET_CM) measuredDistance = TANK_HEIGHTS_CM[i];
   
-            float targetWaterLevel = ((TANK_HEIGHTS_CM[i] - measuredDistance + SENSOR_OFFSET_CM) / TANK_HEIGHTS_CM[i]) * 100;
-            
+            uint8_t targetWaterLevel = ((TANK_HEIGHTS_CM[i] - measuredDistance + SENSOR_OFFSET_CM) / TANK_HEIGHTS_CM[i]) * 100;
+            if (measuredDistance == 0) targetWaterLevel = 0;
             // Apply gradual adjustment
-            float adjustedWaterLevel = gradualAdjustDistance(tanks[i].waterLevel, targetWaterLevel);
+            uint8_t adjustedWaterLevel = gradualAdjustDistance(tanks[i].waterLevel, targetWaterLevel);
             
             if(xSemaphoreTake(tankDataMutex, pdMS_TO_TICKS(100))) {
                 tanks[i].distance = measuredDistance;
@@ -302,7 +303,7 @@ float getStableDistance(int index, float tankheight) {
         readings[i] = readUltrasonicDistance(index);
         
         // Only include readings outside the blind zone
-        if(readings[i] >= BLIND_DISTANCE_CM && readings[i] <= tankheight) {
+        if(readings[i] >= BLIND_DISTANCE_CM && readings[i] <= (tankheight + BLIND_DISTANCE_CM)) {
             validValues[validReadings] = readings[i];
             validReadings++;
         }
@@ -335,7 +336,7 @@ float getStableDistance(int index, float tankheight) {
 float readUltrasonicDistance(int index) {
     // Ensure trigger pin starts LOW
     digitalWrite(sensors[index].trigPin, LOW);
-    delayMicroseconds(5);
+    delayMicroseconds(2);
     
     // Send 10µs pulse to trigger the sensor
     digitalWrite(sensors[index].trigPin, HIGH);
