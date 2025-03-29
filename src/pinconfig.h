@@ -19,9 +19,15 @@
 #define DOWN_btn 19
 #define BUZZER_PIN 36
 
+// Tanks Volumes
+const uint16_t mainVolume = 500;
+const uint16_t deepwellVolume = 3076;
+const uint16_t rainVolume = 187;
+    
+
 // Timing Configuration
 #define DEBOUNCE_DELAY 200
-#define DATA_TIMEOUT 300000  // 5 minutes in milliseconds
+#define DATA_TIMEOUT 3600000  // 1 hr in milliseconds
 #define BT_UPDATE_INTERVAL 5000  // Bluetooth update interval (5 seconds)
 #define COMMAND_RETRY_INTERVAL 1000 // 1 second between command retries
 
@@ -144,6 +150,7 @@ TankTab currentTab = MAIN;
 unsigned long lastTabChange = 0;
 unsigned long lastBluetoothUpdate = 0;
 unsigned long lastButtonPress = 0;
+uint16_t volrem = 0;
 
 // Bluetooth variables
 HardwareSerial BTSerial(2); // UART2 on ESP32

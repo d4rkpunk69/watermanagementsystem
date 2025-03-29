@@ -191,7 +191,7 @@ void loraTask(void *parameter) {
                   }
                   // Acknowledge successful reception
                   // sendAcknowledgement();
-                  beep(50);
+                  beep(20);
                   if (btEnabled && btConnected) {
                       sendTankDataBluetooth();
                   }
@@ -216,7 +216,7 @@ void loraTask(void *parameter) {
                       }
                       // Acknowledge successful reception
                       // sendAcknowledgement();
-                      beep(50);
+                      beep(20);
                       if (btEnabled && btConnected) {
                           sendTankDataBluetooth();
                       }
@@ -344,7 +344,7 @@ void buttonTask(void *parameter) {
             }
             
             if(buttonPressed) {
-                beep(30);
+                beep(10);
                 lastButtonPress = now;
             }
         }
@@ -717,7 +717,7 @@ void sendControlCommand(uint8_t command) {
   reset = false;
   
   unsigned long startTime = millis();
-  const unsigned long timeout = 5000; // Retry sending for up to 5 seconds
+  const unsigned long timeout = 10000; // Retry sending for up to 5 seconds
   const unsigned long resendInterval = 500; // Send every 500ms until ACK received
   
   while (!reset) {
@@ -811,14 +811,36 @@ void updateDisplay(TankTab tab) {
       display.setTextAlignment(TEXT_ALIGN_LEFT);
       
       // Only show battery for the livestock (Node 4)
-      if(tab == LIVESTOCK) {
-          display.drawString(0, 15, "Batt: " + String(tank.batteryPercent) + "%");
-      } else {
-          display.drawString(0, 15, "Power: Connected");
-      }
+    //   if(tab == LIVESTOCK) {
+    //       display.drawString(0, 15, "Batt: " + String(tank.batteryPercent) + "%");
+    //   } else { }
+    switch (tab) {
+        case MAIN: {
+            uint16_t volrem = mainVolume * (waterLevel/100.0f);  // Note the 100.0f for floating-point division
+            display.drawString(0, 15, "V-rem: " + String(volrem) + " L");
+            break;
+        }
+        case DEEPWELL: {
+            uint16_t volrem = deepwellVolume * (waterLevel/100.0f);
+            display.drawString(0, 15, "V-rem: " + String(volrem) + " L");
+            break;
+        }
+        case RAINWATER: {
+            uint16_t volrem = rainVolume * (waterLevel/100.0f);
+            display.drawString(0, 15, "V-rem: " + String(volrem) + " L");
+            break;
+        }
+        case LIVESTOCK:
+            display.drawString(0, 15, "Batt: " + String(tank.batteryPercent) + "%");
+            break;  // Don't forget this break statement
+        default:
+            break;
+    }
+    
+        //   display.drawString(0, 15, "V-rem: Connected");
       
-      display.drawString(0, 30, "Level: " + String(waterLevel, 1) + "%");
-      display.drawString(0, 45, "Last: " + formatTimeAgo(millis() - tank.lastUpdate));
+      display.drawString(0, 30, "Level: " + String(uint8_t(waterLevel), 1) + "%");
+      display.drawString(0, 45, "Upt: " + formatTimeAgo(millis() - tank.lastUpdate));
 
       if (tank.lastAckTime > 0) {
           display.drawString(0, 55, "ACK: " + formatTimeAgo(millis() - tank.lastAckTime));
@@ -827,19 +849,19 @@ void updateDisplay(TankTab tab) {
       // Show status indicators for water levels
       String statusText = "";
       if(waterLevel <= NEARLY_EMPTY_THRESHOLD) {
-          statusText = "NEARLY EMPTY";
+          statusText = "N-Empty";
       } else if(tab == MAIN && waterLevel >= FULL_THRESHOLD_AUTO) {
-          statusText = "FULL";
+          statusText = "FULL-TS";
       } else if(waterLevel > FILLED_THRESHOLD) {
-          statusText = "FILLED";
+          statusText = "ENOUGH";
       }
       
       if(statusText != "") {
           int textWidth = display.getStringWidth(statusText);
-          display.drawString(64 - textWidth/2, 55, statusText);
+          display.drawString(64 - (textWidth/2 + 1), 45, statusText); 
       }
   } else {
-      display.drawString(64, 30, "NO DATA");
+      display.drawString(64, 30, "TURN ON THE SYSTEM\nNO DATA RECEIVED");
   }
 
   display.display();
