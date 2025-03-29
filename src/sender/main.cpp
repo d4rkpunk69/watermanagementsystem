@@ -1,129 +1,80 @@
-/* 
-#include <Arduino.h>
-#include <heltec_unofficial.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <freertos/semphr.h>
-
-// Ultrasonic Sensor Pins
-#define TRIG_PIN 4 //19 7
-#define ECHO_PIN 5 //20 6
-#define NODE_ID 4
-
-// Transmission Configuration
-#define TX_ENABLED true      // Set to false to disable transmission
-#define TX_INTERVAL 5000     // Fixed transmission interval in milliseconds
-uint8_t CALIBRATE = 5;
-#define BIG_GAP 5
-#define SMALL_GAP 1
-
-// Lora Configs
-#define LORA_FREQUENCY 433.0
-#define LORA_SPREADING_FACTOR 9
-#define LORA_BANDWIDTH 125.0
-#define LORA_CODING_RATE 5
-#define LORA_SYNC_WORD 0xF3
-#define LORA_OUTPUT_POWER 17
-
-// Tank Configuration
-uint8_t BLIND_ZONE_CM = 25.0;
-#define TANK_HEIGHT_CM 100.0 
-#define SAMPLES 7            
-#define TIMEOUT_US 30000     
-#define TX_INTERVAL_MIN 5000  
-#define TX_INTERVAL_MAX 15000 
-
-// For 3.2 only
-const int VEXT_control = 36;
-const int ADC_control = 37;
-
-// Battery constants (fallback if heltec_battery_percent fails)
-const float MIN_VOLTAGE = 3.2;
-const float MAX_VOLTAGE = 4.2;
-
-#pragma pack(push, 1)
-// uint8_t nodeID;       
-// float distance_cm;    
-// float battery_v;      
-// uint8_t checksum;    
-struct __attribute__((packed)) LoraPacket {
-    uint8_t nodeID;       
-    float distance_cm;    
-    float battery_v;      
-    uint8_t checksum;     
-};
-//4 0 0 C8 42 24 90 80 40 FA CE 3F 64 53 C9 3F 0 0 F4 34 4 0 0 0 9 0 0 0 7 0 0 0 12 0 0 0 0 0 0 0 B0 BE CE 3F 0 0 0 0 0 0 0 0 A 0 0 0 8 0 0 0 CD CC CC 3F 
-#pragma pack(pop)
-
-struct UltrasonicSensor {
-    int trigPin;
-    int echoPin;
-    float_t lastValidDistance;
-};
-
-// Shared data structure with synchronization
-struct SharedData {
-    float distance;
-    float waterLevel;
-    float batteryPercent;
-    unsigned long lastTxTime;
-    unsigned long lastAckTime;
-    bool ackReceived;
-};
-
-// Global variables
-UltrasonicSensor sensor;
-SharedData sensorData = {0};
-SemaphoreHandle_t dataMutex = NULL;
-
-// Task handles
-TaskHandle_t sensorTaskHandle = NULL;
-TaskHandle_t loraTaskHandle = NULL;
-TaskHandle_t displayTaskHandle = NULL;
-float distance = 0;
+#include "test/pinconfig.h"
 
 // Function prototypes
 void sensorTask(void *parameter);
 void loraTask(void *parameter);
-void displayTask(void *parameter);
+void batteryMonitorTask(void *parameter);
 void initSensor();
 float measureDistance();
 float getStableDistance();
 int batteryToPercent(float voltage);
-String formatTimeAgo(unsigned long timestamp);
 uint8_t calculateChecksum(LoraPacket& packet);
-String getLORAStatus(int state);
-void showLoadingScreen(int progress, String status);
+void enterDeepSleep();
+void showSleepScreen(int batteryPercent);
+void showWakeupScreen(int batteryPercent);
+void showMessage(const String& title, const String& message, int delayTime = 0);
 
 void setup() {
     // For v3.2 only
-    // Serial.begin(9600);
     pinMode(VEXT_control, OUTPUT);
-    digitalWrite(VEXT_control, LOW); // VEXT ON for OLED display
+    digitalWrite(VEXT_control, LOW); // VEXT ON
     
     heltec_setup();
-    
-    // Initialize serial
     Serial.begin(115200);
+    
+    // Initialize display
+    display.init();
+    display.flipScreenVertically();
+    display.setFont(ArialMT_Plain_10);
+    display.clear();
+    
+    // Show startup message
+    showMessage("Starting Up", "Node ID: " + String(NODE_ID), 1000);
+
+    // Check if we're waking up from deep sleep
+    if (heltec_wakeup_was_timer()) {
+        Serial.println("Waking up from deep sleep timer...");
+        sleepCount++;
+        
+        // Check battery level immediately
+        float batteryVoltage = heltec_vbat();
+        int batteryPercent = batteryToPercent(batteryVoltage);
+        Serial.println("Battery level on wake: " + String(batteryPercent) + "%");
+        
+        // Show wake-up status on display
+        showWakeupScreen(batteryPercent);
+        
+        // If we were in low battery mode and battery is still low, go back to sleep
+        if (wasInLowBatteryMode && batteryPercent < BATTERY_NORMAL_THRESHOLD) {
+            Serial.println("Battery still low, returning to sleep...");
+            showMessage("Low Battery", "Still below threshold\nReturning to sleep...", 2000);
+            enterDeepSleep();
+            // This code won't execute as the device will be in deep sleep
+        }
+        
+        // If battery has recovered, reset the flag
+        if (wasInLowBatteryMode && batteryPercent >= BATTERY_NORMAL_THRESHOLD) {
+            wasInLowBatteryMode = false;
+            Serial.println("Battery recovered, resuming normal operation");
+            showMessage("Battery Recovered", "Level: " + String(batteryPercent) + "%\nResuming operation", 2000);
+        }
+    }
     
     // Create mutex for data protection
     dataMutex = xSemaphoreCreateMutex();
     
-    // Initial loading screen
-    showLoadingScreen(0, "Starting...");
-    delay(500);
-    
     // Initialize sensor
-    showLoadingScreen(30, "Ultrasonic");
+    Serial.println("Initializing sensor...");
+    showMessage("Initializing", "Sensor setup...", 500);
     initSensor();
-    showLoadingScreen(50, "Sensor Ready");
-    delay(500);
     
     // Initialize LoRa
-    showLoadingScreen(70, "LoRa Radio");
+    Serial.println("Initializing LoRa...");
+    showMessage("Initializing", "LoRa radio...", 500);
     int loraState = radio.begin();
     if(loraState != RADIOLIB_ERR_NONE) {
-        showLoadingScreen(100, "LoRa FAIL: " + String(loraState));
+        Serial.println("LoRa initialization failed: " + String(loraState));
+        showMessage("ERROR", "LoRa init failed\nCode: " + String(loraState), 0);
         while(1); // Halt on critical error
     }
     
@@ -135,14 +86,10 @@ void setup() {
     radio.setSyncWord(LORA_SYNC_WORD);
     radio.setOutputPower(LORA_OUTPUT_POWER);
     
-    showLoadingScreen(90, "LoRa Ready");
-    delay(500);
+    showMessage("System Ready", "Starting tasks...", 1000);
+    Serial.println("System ready");
     
-    // Complete initialization
-    showLoadingScreen(100, "System Ready");
-    delay(500);
-    
-    // Create tasks pinned to specific cores
+    // Create tasks
     xTaskCreatePinnedToCore(
         sensorTask,
         "SensorTask",
@@ -163,13 +110,14 @@ void setup() {
         0  // Run on Core 0
     );
     
+    // Create dedicated battery monitor task
     xTaskCreatePinnedToCore(
-        displayTask,
-        "DisplayTask",
-        4096,
+        batteryMonitorTask,
+        "BatteryTask",
+        2048,
         NULL,
-        2,  // Higher priority for display
-        &displayTaskHandle,
+        2,  // Higher priority to ensure it runs
+        NULL,
         1  // Run on Core 1
     );
 }
@@ -179,13 +127,100 @@ void loop() {
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 }
 
+// Dedicated battery monitoring task
+void batteryMonitorTask(void *parameter) {
+    // Wait a bit for system to stabilize
+    vTaskDelay(5000 / portTICK_PERIOD_MS);
+    
+    while(true) {
+        // Check battery level
+        float batteryVoltage = heltec_vbat();
+        int batteryPercent = batteryToPercent(batteryVoltage);
+        
+        Serial.println("Battery monitor: " + String(batteryPercent) + "%");
+        
+        // Check if battery is low and we're not already in low battery mode
+        if (batteryPercent < BATTERY_LOW_THRESHOLD && !wasInLowBatteryMode) {
+            Serial.println("Low battery detected in monitor task: " + String(batteryPercent) + "%");
+            
+            // Show warning on display
+            showMessage("LOW BATTERY", "Battery at " + String(batteryPercent) + "%\nPreparing for sleep...", 2000);
+            
+            // Send a final LoRa packet if possible
+            if(xSemaphoreTake(dataMutex, pdMS_TO_TICKS(500))) {
+                float waterLevel = sensorData.waterLevel;
+                
+                LoraPacket packet;
+                packet.nodeID = NODE_ID;
+                packet.waterLevel = waterLevel;
+                packet.battery_v = batteryVoltage;
+                packet.checksum = 0;
+                packet.checksum = calculateChecksum(packet);
+                
+                xSemaphoreGive(dataMutex);
+                
+                radio.transmit((byte*)&packet, sizeof(packet));
+                Serial.println("Low battery notification sent");
+            }
+            
+            // Allow time for packet to be sent
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+            
+            // Enter deep sleep
+            enterDeepSleep();
+        }
+        
+        // Check every 30 seconds
+        vTaskDelay(30000 / portTICK_PERIOD_MS);
+    }
+}
+
+// Function to enter deep sleep mode
+void enterDeepSleep() {
+    // Set flag to indicate we're in low battery mode
+    wasInLowBatteryMode = true;
+    
+    // Get current battery percentage
+    float batteryVoltage = heltec_vbat();
+    int batteryPercent = batteryToPercent(batteryVoltage);
+    
+    // Show sleep screen with battery information
+    showSleepScreen(batteryPercent);
+    
+    // Properly shutdown peripherals to save power
+    Serial.println("Shutting down peripherals before sleep");
+    
+    // Suspend all tasks to ensure clean shutdown
+    if (sensorTaskHandle != NULL) vTaskSuspend(sensorTaskHandle);
+    if (loraTaskHandle != NULL) vTaskSuspend(loraTaskHandle);
+    
+    radio.sleep(); // Put LoRa radio to sleep
+    
+    // Prepare for deep sleep
+    Serial.println("Entering deep sleep mode due to low battery");
+    Serial.println("Sleep count: " + String(sleepCount));
+    Serial.println("Will check battery again in " + String(SLEEP_CHECK_INTERVAL) + " seconds");
+    
+    // Flush serial
+    Serial.flush();
+    
+    // Enter deep sleep with timer wakeup
+    delay(100); // Short delay to ensure all operations complete
+    heltec_deep_sleep(SLEEP_CHECK_INTERVAL);
+    
+    // This code will not be executed (device is in deep sleep)
+}
+
 // Sensor reading task
 void sensorTask(void *parameter) {
     while(true) {
         float distance = getStableDistance();
-        float waterLevel = ((TANK_HEIGHT_CM - distance)/TANK_HEIGHT_CM) * 100;
+        float waterLevel = ((TANK_HEIGHT_CM - distance) / TANK_HEIGHT_CM) * 100.0;
+        // Constrain water level to valid range (0-100%)
+        waterLevel = constrain(waterLevel, 0.0, 100.0);
+        
         float batteryVoltage = heltec_vbat();
-        int batteryPercent = heltec_battery_percent(batteryVoltage);
+        int batteryPercent = batteryToPercent(batteryVoltage);
         
         // Update shared data with mutex protection
         if(xSemaphoreTake(dataMutex, portMAX_DELAY)) {
@@ -202,23 +237,22 @@ void sensorTask(void *parameter) {
 
 // LoRa communication task
 void loraTask(void *parameter) {
-
     while(true) {
-        float distance = 0;
-        float batteryPercent = 0;
+        float waterLevel = 0;
+        float batteryVoltage = 0;
         
         // Get latest data with mutex protection
         if(xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-            distance = sensorData.distance;
-            batteryPercent = sensorData.batteryPercent;
+            waterLevel = sensorData.waterLevel;
+            batteryVoltage = heltec_vbat(); // Get fresh reading
             xSemaphoreGive(dataMutex);
         }
         
-        // Create and send packet
+        // Create and send packet with water level instead of distance
         LoraPacket packet;
         packet.nodeID = NODE_ID;
-        packet.distance_cm = distance;
-        packet.battery_v = heltec_vbat();  // Get fresh battery reading
+        packet.waterLevel = waterLevel;  // Send water level directly
+        packet.battery_v = batteryVoltage;  // Get fresh battery reading
         packet.checksum = 0;
         packet.checksum = calculateChecksum(packet);
         
@@ -230,93 +264,143 @@ void loraTask(void *parameter) {
             xSemaphoreGive(dataMutex);
         }
         
-        // Serial.println("TX Status: " + getLORAStatus(state));
-        
-        // Wait for ACK with timeout 
-        //no need acknowledging just send directly
-        //------------UNCOMMENT IF NEEDED-----------------
-        // if(radio.available()) {
-        //     byte ackData[sizeof(LoraPacket)];
-        //     size_t len = sizeof(ackData);
-        //     int state = radio.receive(ackData, len);
+        if(state == RADIOLIB_ERR_NONE) {
+            Serial.println("Packet sent: WL=" + String(waterLevel) + "%, Batt=" + String(batteryVoltage) + "V");
             
-        //     if(state == RADIOLIB_ERR_NONE && len == sizeof(LoraPacket)) {
-        //         LoraPacket* ack = (LoraPacket*)ackData;
+            // Occasionally update display with current status
+            static unsigned long lastDisplayUpdate = 0;
+            if (millis() - lastDisplayUpdate > 30000) { // Every 30 seconds
+                display.clear();
+                display.setTextAlignment(TEXT_ALIGN_LEFT);
+                display.drawString(0, 0, "Node: " + String(NODE_ID));
+                display.drawString(0, 12, "Battery: " + String(batteryToPercent(batteryVoltage)) + "%");
+                display.drawString(0, 24, "Water Level: " + String(waterLevel, 1) + "%");
+                display.drawString(0, 36, "Tx Status: OK");
                 
-        //         // Update ACK time with mutex protection
-        //         if(xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-        //             sensorData.lastAckTime = millis();
-        //             sensorData.ackReceived = true;
-        //             xSemaphoreGive(dataMutex);
-        //         }
-        //     }
-        // }
-        
+                // Draw simple battery icon
+                int battWidth = 30;
+                display.drawRect(90, 10, battWidth, 15);
+                display.drawRect(90 + battWidth, 13, 3, 9); // Battery nub
+                display.fillRect(90, 10, (battWidth * batteryToPercent(batteryVoltage) / 100), 15);
+                
+                display.display();
+                lastDisplayUpdate = millis();
+            }
+        } else {
+            Serial.println("TX Error: " + String(state));
+        }
         
         // Random delay to avoid collisions
         vTaskDelay(random(TX_INTERVAL_MIN, TX_INTERVAL_MAX) / portTICK_PERIOD_MS);
     }
 }
 
-// Display update task
-void displayTask(void *parameter) {
-    while(true) {
-        // Local copies of shared data
-        float distance = 0;
-        float waterLevel = 0;
-        float batteryPercent = 0;
-        unsigned long lastTxTime = 0;
-        unsigned long lastAckTime = 0;
-        bool ackReceived = false;
-        
-        // Get latest data with mutex protection
-        if(xSemaphoreTake(dataMutex, portMAX_DELAY)) {
-            distance = sensorData.distance;
-            waterLevel = sensorData.waterLevel;
-            batteryPercent = sensorData.batteryPercent;
-            lastTxTime = sensorData.lastTxTime;
-            // lastAckTime = sensorData.lastAckTime; //again no acknowledgin
-            // ackReceived = sensorData.ackReceived;  
-            xSemaphoreGive(dataMutex);
-        }
-        
-        // Update display
-        display.clear();
-        display.setTextAlignment(TEXT_ALIGN_CENTER);
-        
-        // Header with node ID
-        display.drawString(64, 0, "Node " + String(NODE_ID) + " Deepwell");
-        display.drawHorizontalLine(0, 10, 128);
-        
-        // Main data
-        display.setTextAlignment(TEXT_ALIGN_LEFT);
-        display.drawString(0, 15, "Batt: " + String(batteryPercent, 1) + "%");
-        display.drawString(0, 25, "Dist: " + String(distance, 1) + "cm");
-        display.drawString(0, 35, "Level: " + String(waterLevel, 1) + "%");
-        
-        // Transmission info
-        if(lastTxTime > 0) {
-            display.drawString(0, 45, "Sent: " + formatTimeAgo(lastTxTime));
-        }
-        
-        // Acknowledgment info
-        if(ackReceived) {
-            display.drawString(0, 55, "ACK: " + formatTimeAgo(lastAckTime));
-        } else if(lastTxTime > 0) {
-            display.drawString(0, 55, "ACK: Waiting...");
-        }
-        
-        display.display();
-        
-        // Update display every 100ms
-        vTaskDelay(100 / portTICK_PERIOD_MS);
+// Display the sleep screen with battery information
+void showSleepScreen(int batteryPercent) {
+    display.clear();
+    
+    // Draw header
+    display.setFont(ArialMT_Plain_16);
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
+    display.drawString(64, 0, "SLEEP MODE");
+    
+    // Draw battery info
+    display.setFont(ArialMT_Plain_10);
+    display.drawString(64, 20, "Battery Low: " + String(batteryPercent) + "%");
+    display.drawString(64, 32, "Next check in " + String(SLEEP_CHECK_INTERVAL) + "s");
+    display.drawString(64, 44, "Sleep count: " + String(sleepCount));
+    
+    // Draw battery icon
+    int battWidth = 40;
+    int battHeight = 15;
+    int battX = 44;
+    int battY = 56;
+    display.drawRect(battX, battY, battWidth, battHeight);
+    display.drawRect(battX + battWidth, battY + 3, 3, battHeight - 6); // Battery nub
+    display.fillRect(battX, battY, (battWidth * batteryPercent / 100), battHeight);
+    
+    display.display();
+    
+    // Allow time for the user to see the display
+    delay(DISPLAY_TIMEOUT);
+}
+
+// Display the wakeup screen with battery information
+void showWakeupScreen(int batteryPercent) {
+    display.clear();
+    
+    // Draw header
+    display.setFont(ArialMT_Plain_16);
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
+    display.drawString(64, 0, "WAKING UP");
+    
+    // Draw battery info
+    display.setFont(ArialMT_Plain_10);
+    display.drawString(64, 20, "Battery: " + String(batteryPercent) + "%");
+    display.drawString(64, 32, "Sleep count: " + String(sleepCount));
+    
+    if (batteryPercent < BATTERY_NORMAL_THRESHOLD) {
+        display.drawString(64, 44, "Battery still low");
+    } else {
+        display.drawString(64, 44, "Battery OK - resuming");
+    }
+    
+    // Draw battery icon
+    int battWidth = 40;
+    int battHeight = 15;
+    int battX = 44;
+    int battY = 56;
+    display.drawRect(battX, battY, battWidth, battHeight);
+    display.drawRect(battX + battWidth, battY + 3, 3, battHeight - 6); // Battery nub
+    display.fillRect(battX, battY, (battWidth * batteryPercent / 100), battHeight);
+    
+    display.display();
+    
+    // Allow time for the user to see the display
+    delay(2000);
+}
+
+// Display a message on the OLED with title and content
+void showMessage(const String& title, const String& message, int delayTime) {
+    display.clear();
+    
+    // Draw title
+    display.setFont(ArialMT_Plain_16);
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
+    display.drawString(64, 0, title);
+    
+    // Draw message (support for multi-line messages)
+    display.setFont(ArialMT_Plain_10);
+    
+    int y = 22;
+    int startPos = 0;
+    int nextLinePos;
+    
+    // Parse and draw each line
+    while ((nextLinePos = message.indexOf('\n', startPos)) != -1) {
+        String line = message.substring(startPos, nextLinePos);
+        display.drawString(64, y, line);
+        y += 12;
+        startPos = nextLinePos + 1;
+    }
+    
+    // Draw the last line
+    if (startPos < message.length()) {
+        display.drawString(64, y, message.substring(startPos));
+    }
+    
+    display.display();
+    
+    // Delay if specified
+    if (delayTime > 0) {
+        delay(delayTime);
     }
 }
 
 void initSensor() {
     sensor.trigPin = TRIG_PIN;
     sensor.echoPin = ECHO_PIN;
-    sensor.lastValidDistance = TANK_HEIGHT_CM;  // Start with full tank assumption
+    sensor.lastValidDistance = TANK_HEIGHT_CM;  // Start with empty tank assumption
     
     pinMode(sensor.trigPin, OUTPUT);
     pinMode(sensor.echoPin, INPUT);
@@ -345,18 +429,22 @@ float measureDistance() {
     digitalWrite(sensor.trigPin, LOW);
 
     long duration = pulseIn(sensor.echoPin, HIGH, TIMEOUT_US);
-    distance = (duration * 0.0343) / 2;
+    float distance = (duration * 0.0343) / 2;
+    
     if (distance > TANK_HEIGHT_CM || distance == 0) {
         return sensor.lastValidDistance;
     }
+    Serial.println(distance);
     distance = distance + CALIBRATE - BLIND_ZONE_CM;
+    
     if (fabs(distance - sensor.lastValidDistance) > BIG_GAP) {
-    sensor.lastValidDistance = gradualAdjustDistance(sensor.lastValidDistance, distance);
+        sensor.lastValidDistance = gradualAdjustDistance(sensor.lastValidDistance, distance);
     } else {
         // Normal update
         sensor.lastValidDistance = distance;
     }
-    return distance;
+    
+    return sensor.lastValidDistance;
 }
 
 float getStableDistance() {
@@ -379,23 +467,10 @@ float getStableDistance() {
     return readings[SAMPLES/2];
 }
 
-// Convert voltage to percentage (fallback method)
+// Convert voltage to percentage
 int batteryToPercent(float voltage) {
     int percent = ((voltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE)) * 100.0;
     return constrain(percent, 0, 100);  // Ensure range 0-100
-}
-
-// Format time elapsed since timestamp
-String formatTimeAgo(unsigned long timestamp) {
-    unsigned long elapsed = millis() - timestamp;
-    
-    if(elapsed < 60000) {  // Less than 1 minute
-        return String(elapsed / 1000) + "s";
-    } else if(elapsed < 3600000) {  // Less than 1 hour
-        return String(elapsed / 60000) + "m";
-    } else {  // Hours
-        return String(elapsed / 3600000) + "h";
-    }
 }
 
 uint8_t calculateChecksum(LoraPacket& packet) {
@@ -406,36 +481,3 @@ uint8_t calculateChecksum(LoraPacket& packet) {
     }
     return sum;
 }
-
-String getLORAStatus(int state) {
-    switch(state) {
-        case RADIOLIB_ERR_NONE:          return "OK";
-        case RADIOLIB_ERR_PACKET_TOO_LONG: return "TooLong";
-        case RADIOLIB_ERR_TX_TIMEOUT:    return "Timeout";
-        case RADIOLIB_ERR_CRC_MISMATCH:  return "CRC Error";
-        case RADIOLIB_ERR_INVALID_PREAMBLE_LENGTH: return "Bad Preamble";
-        case RADIOLIB_ERR_INVALID_BANDWIDTH: return "Bad BW";
-        case RADIOLIB_ERR_INVALID_SPREADING_FACTOR: return "Bad SF";
-        case RADIOLIB_ERR_INVALID_CODING_RATE: return "Bad CR";
-        default: return "Err:" + String(state);
-    }
-}
-
-void showLoadingScreen(int progress, String status) {
-    display.clear();
-    
-    // Draw border
-    display.drawRect(0, 0, display.width(), display.height());
-    
-    // Draw progress bar
-    int barWidth = display.width() - 4;
-    display.drawProgressBar(2, 2, barWidth, 8, progress);
-    
-    // Show status text
-    display.setTextAlignment(TEXT_ALIGN_CENTER);
-    display.drawString(display.width()/2, 15, "Initializing...");
-    display.drawString(display.width()/2, 30, status);
-    
-    display.display();
-}
-*/

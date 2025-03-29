@@ -4,6 +4,16 @@
 #include <freertos/task.h>
 #include <freertos/semphr.h>
 
+// Battery management constants
+#define BATTERY_LOW_THRESHOLD 20       // Battery percentage threshold for sleep mode
+#define BATTERY_NORMAL_THRESHOLD 21    // Resume normal operation at this threshold (hysteresis)
+#define SLEEP_CHECK_INTERVAL 60        // Check battery every 60 seconds in sleep mode
+#define DISPLAY_TIMEOUT 3000           // How long to show messages before sleep (ms)
+
+// RTC data that persists through deep sleep
+RTC_DATA_ATTR bool wasInLowBatteryMode = false;
+RTC_DATA_ATTR int sleepCount = 0;
+
 // Ultrasonic Sensor Pins
 #define TRIG_PIN 4
 #define ECHO_PIN 5
@@ -26,7 +36,7 @@ uint8_t CALIBRATE = 5;
 
 // Tank Configuration
 #define BLIND_ZONE_CM 25
-#define TANK_HEIGHT_CM 100.0
+#define TANK_HEIGHT_CM 91.44
 #define SAMPLES 7
 #define TIMEOUT_US 30000
 
